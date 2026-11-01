@@ -36,6 +36,8 @@ public:
     bool flush(bool durable);
     void close() noexcept;
     bool good() const noexcept { return !failed_; }
+    bool has_pending() const noexcept { return !failed_ && !pending_.empty(); }
+    bool needs_sync() const noexcept { return !failed_ && unsynced_records_ != 0; }
     std::uint64_t rotations() const noexcept { return rotations_.load(std::memory_order_relaxed); }
     std::uint64_t repaired_bytes() const noexcept { return repaired_bytes_.load(std::memory_order_relaxed); }
     std::uint64_t sync_errors() const noexcept { return sync_errors_.load(std::memory_order_relaxed); }

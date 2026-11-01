@@ -100,6 +100,12 @@ bool Logger::initialize(const Options &options, std::string *error) {
 
         return false;
     }
+    if (options.flush_interval.count() < 0 || options.sync_interval.count() < 0 ||
+        options.flush_interval > std::chrono::hours(24) || options.sync_interval > std::chrono::hours(24) ||
+        options.level > Level::Off || options.flush_on_level > Level::Off || options.sync_on_level > Level::Off) {
+        if (error) *error = "invalid flush interval or level";
+        return false;
+    }
 #if ZXLOG_BUILD_MODE == 1
     if (options.initial_mode != OutputMode::Text) {
         if (error) {
@@ -356,6 +362,7 @@ bool Logger::pop_event(Slot &scratch, Control &ctrl, bool &is_control) {
 
         scratch.sequence = record.sequence;
         scratch.length = record.length;
+        scratch.level = record.level;
         std::memcpy(scratch.bytes.data(), record.bytes.data(), scratch.length);
         q.read.store(head + 1, std::memory_order_release);
         is_control = false;
@@ -446,12 +453,33 @@ void Logger::consume() {
     Slot scratch;
     Control control;
     bool is_control = false;
+    using Clock = std::chrono::steady_clock;
+    auto next_flush = Clock::now() + options_.flush_interval;
+    auto next_sync = Clock::now() + options_.sync_interval;
     for (;;) {
+        const auto now = Clock::now();
+        if (options_.sync_interval.count() > 0 && now >= next_sync) {
+            if ((text_file_ && text_file_->needs_sync()) || (binary_file_ && binary_file_->needs_sync())) {
+                (void)flush_writers(true);
+            }
+            next_sync = now + options_.sync_interval;
+        }
+        if (options_.flush_interval.count() > 0 && now >= next_flush) {
+            if ((text_file_ && text_file_->has_pending()) || (binary_file_ && binary_file_->has_pending())) {
+                (void)flush_writers(false);
+            }
+            next_flush = now + options_.flush_interval;
+        }
         if (pop_event(scratch, control, is_control)) {
             ++consumed_sequence_;
             if (!is_control) {
                 try {
                     write_log(scratch);
+                    if (scratch.level >= options_.sync_on_level && options_.sync_on_level != Level::Off) {
+                        (void)flush_writers(true);
+                    } else if (scratch.level >= options_.flush_on_level && options_.flush_on_level != Level::Off) {
+                        (void)flush_writers(false);
+                    }
                 } catch (...) {
                     note_io_error();
                 }
@@ -481,7 +509,10 @@ void Logger::consume() {
         std::unique_lock<std::mutex> lock(wake_mutex_);
         // Bounded polling avoids the lost-notification window without a shared
         // mutex in the hot producer path. Idle wake is at most ~5 ms.
-        wake_cv_.wait_for(lock, std::chrono::milliseconds(5));
+        auto deadline = Clock::now() + std::chrono::milliseconds(5);
+        if (options_.flush_interval.count() > 0) deadline = std::min(deadline, next_flush);
+        if (options_.sync_interval.count() > 0) deadline = std::min(deadline, next_sync);
+        wake_cv_.wait_until(lock, deadline);
     }
 
     (void)flush_writers(false);

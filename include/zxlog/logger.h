@@ -53,6 +53,10 @@ struct Options {
     unsigned max_files = 4;  // active + up to 3 rotated archives
     std::size_t io_batch_bytes = 16384;
     std::size_t max_text_bytes = 64u << 10;  // complete line, including prefix/newline
+    std::chrono::milliseconds flush_interval{100};  // 0 disables periodic write
+    std::chrono::milliseconds sync_interval{0};     // periodic fdatasync, opt-in
+    Level flush_on_level = Level::Off;
+    Level sync_on_level = Level::Off;
     unsigned sync_every_records = 0;  // 0 = only explicit flush(true) / rotation sync
     bool repair_on_start = true;
     bool sync_on_rotate = true;
@@ -96,7 +100,7 @@ public:
     Stats stats() const noexcept;
 
     template <typename... Args>
-    void record(std::uint32_t site_id, Args &&...args) noexcept {
+    void record(Level level, std::uint32_t site_id, Args &&...args) noexcept {
         static_assert(((detail::type_of<Args>() != Type::Invalid) && ...),
                       "zxlog: argument cannot be serialized");
         if (!accepting_.load(std::memory_order_acquire) || !enter_record()) {
@@ -129,6 +133,7 @@ public:
         }
         const auto bytes = static_cast<std::size_t>(p - data);
         slot.length = static_cast<std::uint32_t>(bytes);
+        slot.level = level;
         const auto now = std::chrono::steady_clock::now().time_since_epoch();
         const std::uint64_t stamp =
             static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
@@ -165,6 +170,7 @@ private:
         std::array<std::uint8_t, kMaxRecordSize> bytes{};
         std::uint64_t sequence = 0;
         std::uint32_t length = 0;
+        Level level = Level::Info;  // backend policy, not part of the wire record
     };
 
     struct ProducerQueue {
@@ -253,7 +259,7 @@ inline Logger *logger_ptr(const std::shared_ptr<Logger> &logger) noexcept { retu
                     static constexpr auto zxlog_site_ ZXLOG_SITE_ATTR =                                  \
                         ::zxlog::detail::make_site<decltype(zxlog_args_)...>(level_, __FILE__, __LINE__, \
                                                                              __COUNTER__, literal_);     \
-                    zxlog_logger_->record(zxlog_site_.id, zxlog_args_...);                               \
+                    zxlog_logger_->record(level_, zxlog_site_.id, zxlog_args_...);                       \
                 },                                                                                       \
                 std::forward_as_tuple(__VA_ARGS__));                                                     \
         }                                                                                                \

@@ -168,6 +168,59 @@ void isolation(const Fixture &f) {
     global.shutdown();
 }
 
+void periodic(const Fixture &f) {
+    const auto wait_for_output = [&](const zxlog::Options &options) {
+        const auto path = ZXLOG_BUILD_MODE == 1 ? options.text_path : options.binary_path;
+        const auto initial = ZXLOG_BUILD_MODE == 1 ? 0u : zxlog::kBinaryHeaderSize;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (fs::file_size(path) <= initial && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        require(fs::file_size(path) > initial, "automatic flush did not write output");
+    };
+    auto options = f.options("timer");
+    auto timer = f.create(options);
+    ZX_LOG(timer, INFO, "timer event");
+    wait_for_output(options); // No explicit flush, shutdown or batch threshold.
+
+    options = f.options("manual");
+    options.flush_interval = std::chrono::milliseconds(0);
+    auto manual = f.create(options);
+    ZX_LOG(manual, INFO, "manual event");
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    require(fs::file_size(ZXLOG_BUILD_MODE == 1 ? options.text_path : options.binary_path) ==
+            (ZXLOG_BUILD_MODE == 1 ? 0u : zxlog::kBinaryHeaderSize), "disabled timer flushed");
+    flush(*manual);
+
+    options = f.options("severity");
+    options.flush_interval = std::chrono::milliseconds(0);
+    options.flush_on_level = zxlog::Level::Error;
+    auto severity = f.create(options);
+    ZX_LOG(severity, INFO, "buffered before error");
+    ZX_LOG(severity, ERROR, "severity event");
+    wait_for_output(options);
+
+    options = f.options("sync_timer");
+    options.flush_interval = std::chrono::milliseconds(0);
+    options.sync_interval = std::chrono::milliseconds(20);
+    auto synced = f.create(options);
+    ZX_LOG(synced, INFO, "sync timer event");
+    wait_for_output(options);
+    flush(*synced);
+
+    options = f.options("sync_level");
+    options.flush_interval = std::chrono::milliseconds(0);
+    options.sync_on_level = zxlog::Level::Error;
+    auto sync_level = f.create(options);
+    ZX_LOG(sync_level, ERROR, "sync level event");
+    wait_for_output(options);
+    flush(*sync_level);
+    for (auto *logger : {timer.get(), manual.get(), severity.get(), synced.get(), sync_level.get()})
+        require(logger->stats().io_errors == 0, "automatic flush failed");
+    options.flush_interval = std::chrono::milliseconds(-1);
+    std::string error;
+    require(!zxlog::Logger::create(options, &error), "negative interval accepted");
+}
+
 void text_limits(const Fixture &f) {
 #if ZXLOG_BUILD_MODE != 2
     auto options = f.options("text_limits");
@@ -418,6 +471,8 @@ int main(int argc, char **argv) {
         const std::string scenario = argv[1];
         if (scenario == "isolation")
             isolation(fixture);
+        else if (scenario == "periodic")
+            periodic(fixture);
         else if (scenario == "text_limits")
             text_limits(fixture);
         else if (scenario == "encoding")
