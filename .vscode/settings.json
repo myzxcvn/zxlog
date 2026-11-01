@@ -1,0 +1,28 @@
+{
+    "clangd.arguments": [
+        // 后台自动分析文件
+        "--background-index",
+
+        // 标记compile_commands.json文件的目录
+        "--compile-commands-dir=out/Binary",
+
+        "--query-driver=/usr/bin/gcc,/usr/bin/g++",
+
+        // 同时开启任务数量
+        "-j=12",
+
+        // 更详细的补全内容
+        "--all-scopes-completion",
+
+        // 全局补全(自动补充头文件)
+        // "--completion-style=detailed",
+
+        // 补充头文件形式
+        // "--header-insertion=iwyu",
+        "--pch-storage=memory",
+        "--clang-tidy"
+    ],
+
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "xaver.clang-format"
+}

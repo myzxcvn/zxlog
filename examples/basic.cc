@@ -1,4 +1,5 @@
 #include "zxlog/zxlog.h"
+
 #include "build_id.h"
 #include <cstdint>
 #include <iostream>
@@ -6,18 +7,25 @@
 #include <vector>
 #include <string>
 
-struct SensorCode { std::uint32_t number; };
-namespace zxlog {
-template<> struct LogAdapter<SensorCode> {
-    using Wire = std::uint32_t;
-    static constexpr Wire to_wire(const SensorCode& x) noexcept { return x.number; }
+struct SensorCode {
+    std::uint32_t number;
 };
-}
-int main(int argc, char** argv) {
+namespace zxlog {
+
+template <>
+struct LogAdapter<SensorCode> {
+    using Wire = std::uint32_t;
+    static constexpr Wire to_wire(const SensorCode &x) noexcept { return x.number; }
+};
+
+}  // namespace zxlog
+
+int main(int argc, char **argv) {
     if (argc < 4) {
         std::cerr << "usage: zxlog_demo <binary|text|switch|stress|rotate> <dict> <prefix>\n";
         return 2;
     }
+
     const std::string mode = argv[1];
     const std::string prefix = argv[3];
     zxlog::Options opts;
@@ -33,7 +41,7 @@ int main(int argc, char** argv) {
     opts.level = zxlog::Level::Trace;
     opts.initial_mode = mode == "text" ? zxlog::OutputMode::Text : zxlog::OutputMode::Binary;
     std::string error;
-    auto& logger = zxlog::Logger::instance();
+    auto &logger = zxlog::Logger::instance();
     if (!logger.initialize(opts, &error)) {
         std::cerr << "zxlog initialization failed: " << error << '\n';
         return 3;
@@ -59,41 +67,67 @@ int main(int argc, char** argv) {
     logger.set_level(zxlog::Level::Off);
     LOG_INFO("Should not execute: {}", ++side_effect);
     logger.set_level(zxlog::Level::Trace);
-    if (side_effect != 0) return 4;
+    if (side_effect != 0) {
+        return 4;
+    }
+
     if (mode == "stress") {
         std::vector<std::thread> producers;
         for (std::uint32_t worker = 0; worker < 4; ++worker) {
             producers.emplace_back([worker] {
-                for (std::uint32_t seq = 0; seq < 500; ++seq)
+                for (std::uint32_t seq = 0; seq < 500; ++seq) {
                     LOG_DEBUG("worker={} sequence={}", worker, seq);
+                }
             });
         }
-        for (auto& p : producers) p.join();
+
+        for (auto &p : producers) {
+            p.join();
+        }
     }
+
     if (mode == "churn") {
         for (unsigned i = 0; i < 20; ++i) {
             std::thread producer([i] { LOG_INFO("churn worker={}", i); });
             producer.join();
             // Confirm prior producer's ring was drained before next registration.
-            if (!logger.flush()) return 9;
+            if (!logger.flush()) {
+                return 9;
+            }
         }
     }
+
     if (mode == "rotate") {
-        for (int i = 0; i < 300; ++i)
+        for (int i = 0; i < 300; ++i) {
             LOG_INFO("rotation sequence={:05d}", i);
+        }
     }
+
     if (mode == "switch") {
-        if (!logger.set_mode(zxlog::OutputMode::Text)) return 5;
+        if (!logger.set_mode(zxlog::OutputMode::Text)) {
+            return 5;
+        }
+
         LOG_INFO("Phase: {}", "text");
-        if (!logger.set_mode(zxlog::OutputMode::Binary)) return 6;
+        if (!logger.set_mode(zxlog::OutputMode::Binary)) {
+            return 6;
+        }
+
         LOG_INFO("Phase: {}", "binary");
     }
-    if (!logger.flush(true)) { std::cerr << "I/O flush error\n"; return 7; }
+
+    if (!logger.flush(true)) {
+        std::cerr << "I/O flush error\n";
+        return 7;
+    }
+
     logger.shutdown();
     const auto s = logger.stats();
-    std::cout << "accepted=" << s.accepted << " dropped=" << s.dropped
-              << " io_errors=" << s.io_errors << " rotations=" << s.rotations
-              << " repaired_bytes=" << s.repaired_bytes << " sync_errors=" << s.sync_errors << '\n';
-    return ((mode == "stress" || mode == "rotate" || s.dropped == 0) &&
-            s.io_errors == 0 && s.sync_errors == 0) ? 0 : 8;
+    std::cout << "accepted=" << s.accepted << " dropped=" << s.dropped << " io_errors=" << s.io_errors
+              << " rotations=" << s.rotations << " repaired_bytes=" << s.repaired_bytes
+              << " sync_errors=" << s.sync_errors << '\n';
+    return ((mode == "stress" || mode == "rotate" || s.dropped == 0) && s.io_errors == 0 &&
+            s.sync_errors == 0)
+               ? 0
+               : 8;
 }

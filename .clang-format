@@ -1,0 +1,20 @@
+# Google-derived zxlog formatting profile.
+BasedOnStyle: Google
+Standard: Latest
+
+IndentWidth: 4
+AccessModifierOffset: -4
+IndentCaseLabels: false
+
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Empty
+
+BreakStringLiterals: false
+ColumnLimit: 110
+
+DerivePointerAlignment: false
+PointerAlignment: Right
+
+SortIncludes: false
+IncludeBlocks: Preserve

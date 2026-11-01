@@ -12,32 +12,32 @@
 // Link with build/zxlog_meta.ld to collect template-local blobs on GCC versions
 // affected by PR c++/88061 and to retain them when linker garbage collection runs.
 #if defined(__GNUC__) || defined(__clang__)
-#  if defined(__has_attribute)
-#    if __has_attribute(retain)
-#      define ZXLOG_RETAIN_ATTR __attribute__((retain))
-#    else
-#      define ZXLOG_RETAIN_ATTR
-#    endif
-#  else
-#    define ZXLOG_RETAIN_ATTR
-#  endif
-#  define ZXLOG_SITE_ATTR __attribute__((used, section("zxlog_meta"), aligned(1))) ZXLOG_RETAIN_ATTR
+#if defined(__has_attribute)
+#if __has_attribute(retain)
+#define ZXLOG_RETAIN_ATTR __attribute__((retain))
 #else
-#  error "zxlog v0.1 metadata extraction requires GCC/Clang on ELF"
+#define ZXLOG_RETAIN_ATTR
+#endif
+#else
+#define ZXLOG_RETAIN_ATTR
+#endif
+#define ZXLOG_SITE_ATTR __attribute__((used, section("zxlog_meta"), aligned(1))) ZXLOG_RETAIN_ATTR
+#else
+#error "zxlog v0.1 metadata extraction requires GCC/Clang on ELF"
 #endif
 
 namespace zxlog::detail {
 
-constexpr std::uint32_t kSiteMagic = 0x4d4c585au; // "ZXLM" little-endian
+constexpr std::uint32_t kSiteMagic = 0x4d4c585au;  // "ZXLM" little-endian
 constexpr std::uint32_t kHashInit = 2166136261u;
-constexpr std::uint32_t hash_byte(std::uint32_t h, std::uint8_t b) noexcept {
-    return (h ^ b) * 16777619u;
-}
+constexpr std::uint32_t hash_byte(std::uint32_t h, std::uint8_t b) noexcept { return (h ^ b) * 16777619u; }
 
 template <std::size_t N>
 constexpr std::uint32_t hash_chars(std::uint32_t h, const char (&s)[N]) noexcept {
-    for (std::size_t i = 0; i + 1 < N; ++i)
+    for (std::size_t i = 0; i + 1 < N; ++i) {
         h = hash_byte(h, static_cast<std::uint8_t>(s[i]));
+    }
+
     return h;
 }
 
@@ -61,17 +61,12 @@ struct SiteBlob {
 #pragma pack(pop)
 
 template <typename... Args, std::size_t S, std::size_t F>
-constexpr auto make_site(Level level,
-                         const char (&file)[S],
-                         std::uint32_t line,
-                         std::uint32_t ordinal,
+constexpr auto make_site(Level level, const char (&file)[S], std::uint32_t line, std::uint32_t ordinal,
                          const char (&format)[F]) noexcept {
     constexpr std::size_t A = sizeof...(Args);
     static_assert(A <= 255, "zxlog: too many arguments");
-    static_assert(sizeof(SiteBlob<F, S, A>) <= 65535,
-                  "zxlog: metadata record too large");
-    static_assert(((type_of<Args>() != Type::Invalid) && ...),
-                  "zxlog: unsupported argument type");
+    static_assert(sizeof(SiteBlob<F, S, A>) <= 65535, "zxlog: metadata record too large");
+    static_assert(((type_of<Args>() != Type::Invalid) && ...), "zxlog: unsupported argument type");
     SiteBlob<F, S, A> site{};
     site.magic = kSiteMagic;
     site.version = 1;
@@ -82,16 +77,34 @@ constexpr auto make_site(Level level,
     site.arg_count = static_cast<std::uint8_t>(A);
     site.level = static_cast<std::uint8_t>(level);
     const std::array<Type, A> codes{{type_of<Args>()...}};
-    for (std::size_t i = 0; i < A; ++i) site.types[i] = static_cast<std::uint8_t>(codes[i]);
-    for (std::size_t i = 0; i < S; ++i) site.file[i] = file[i];
-    for (std::size_t i = 0; i < F; ++i) site.format[i] = format[i];
+    for (std::size_t i = 0; i < A; ++i) {
+        site.types[i] = static_cast<std::uint8_t>(codes[i]);
+    }
+
+    for (std::size_t i = 0; i < S; ++i) {
+        site.file[i] = file[i];
+    }
+
+    for (std::size_t i = 0; i < F; ++i) {
+        site.format[i] = format[i];
+    }
+
     auto h = hash_chars(hash_chars(kHashInit, file), format);
-    for (unsigned n = 0; n != 4; ++n) h = hash_byte(h, static_cast<std::uint8_t>(line >> (8 * n)));
-    for (unsigned n = 0; n != 4; ++n) h = hash_byte(h, static_cast<std::uint8_t>(ordinal >> (8 * n)));
+    for (unsigned n = 0; n != 4; ++n) {
+        h = hash_byte(h, static_cast<std::uint8_t>(line >> (8 * n)));
+    }
+
+    for (unsigned n = 0; n != 4; ++n) {
+        h = hash_byte(h, static_cast<std::uint8_t>(ordinal >> (8 * n)));
+    }
+
     h = hash_byte(h, static_cast<std::uint8_t>(level));
-    for (std::size_t i = 0; i < A; ++i) h = hash_byte(h, site.types[i]);
+    for (std::size_t i = 0; i < A; ++i) {
+        h = hash_byte(h, site.types[i]);
+    }
+
     site.id = h;
     return site;
 }
 
-} // namespace zxlog::detail
+}  // namespace zxlog::detail

@@ -1,1 +1,2 @@
 buildconfig = "//build/BUILDCONFIG.gn"
+export_compile_commands = [ "*" ]
