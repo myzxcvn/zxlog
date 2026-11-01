@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Generate one build identity shared by the executable and the log dictionary.
+"""Generate a source fingerprint and a runtime linked-identity accessor.
 
 For the demo, inputs cover all application and zxlog sources and GN options.
 Production integrations should provide all files/options that can affect LogSites.
+The final ID is assigned by extract_dictionary.py after linking, never here.
 """
 import argparse
 import hashlib
@@ -26,11 +27,9 @@ def main():
     build_id = h.digest()[:16]
     header = Path(a.header)
     header.parent.mkdir(parents=True, exist_ok=True)
-    body = ('#pragma once\n#include <array>\n#include <cstdint>\n'
+    body = ('#pragma once\n#include "zxlog/identity.h"\n'
             'namespace zxlog::build {\n'
-            'inline constexpr std::array<std::uint8_t, 16> kBuildId{{'
-            + ', '.join(f'0x{x:02x}' for x in build_id)
-            + '}};\n}\n')
+            'inline const auto kBuildId = ::zxlog::linked_build_id();\n}\n')
     header.write_text(body, encoding='utf-8')
     file = Path(a.id_file)
     file.parent.mkdir(parents=True, exist_ok=True)

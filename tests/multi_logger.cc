@@ -482,6 +482,9 @@ void conflicts(const Fixture &f) {
         require(!fs::exists(active_path(options) + ".1"), "conflict rotated live output");
     };
     rejected(options);
+    auto wrong_identity = f.options("wrong_identity");
+    wrong_identity.build_id[0] ^= 1;
+    rejected(wrong_identity);
     auto alias = f.options("./live");
     rejected(alias);
     fs::create_directory_symlink(f.root, f.root / "alias");

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Derive per-executable IDs from the source fingerprint and linked ELF, finalize a retained runtime identity section, and reject unfinalized or mismatched IDs. Validate image/dictionary hashes during deployment packaging and emit matching manifests; keep existing log/dictionary wire formats readable.
+
 - Add classified loss/error counters, thread-safe last_error(), output_failed(), and rate-limited backend error callbacks with reentrancy/exception isolation. Preserve the original file failure and verify explicit shutdown/recreate recovery using injected I/O failures.
 
 - Flush pending low-volume output every 100 ms by default. Add independent flush/sync intervals and severity triggers, retaining explicit acknowledged flush barriers.

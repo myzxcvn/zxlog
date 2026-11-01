@@ -13,3 +13,10 @@ SECTIONS
   }
 }
 INSERT BEFORE .rodata;
+
+/* Runtime identity stays loaded after stripping the build-only metadata. */
+SECTIONS
+{
+  zxlog_identity : { KEEP(*(zxlog_identity)) }
+}
+INSERT AFTER .data;

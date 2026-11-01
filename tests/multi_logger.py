@@ -35,6 +35,7 @@ def main(a):
     build_id, entries = decode.load_dictionary(dictionary)
     assert sum(e[1] == 'custom {}' for e in entries.values()) == 1, 'one call site must serve both loggers'
     image = Path(exe).read_bytes()
+    assert extract_dictionary.elf_section(image, 'zxlog_identity') == build_id
     try:
         extract_dictionary.elf_section(image, 'zxlog_meta')
     except ValueError:

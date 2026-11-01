@@ -93,6 +93,11 @@ bool Logger::initialize(const Options &options, std::string *error) {
 
         return false;
     }
+    const auto identity = linked_build_id();
+    if (identity == std::array<std::uint8_t, 16>{} || options.build_id != identity) {
+        if (error) *error = "unfinalized ELF or build ID differs from linked image";
+        return false;
+    }
 
     if (options.max_producers < 1 || options.max_producers > 256 || options.per_thread_slots < 2 ||
         options.per_thread_slots > 65536) {

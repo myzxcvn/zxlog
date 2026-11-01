@@ -30,7 +30,7 @@ config("metadata_link") {
 }
 
 static_library("zxlog") {
-  sources = [ "src/logger.cc", "src/file_writer.cc", "src/path_lease.cc" ]
+  sources = [ "src/logger.cc", "src/file_writer.cc", "src/path_lease.cc", "src/identity.cc" ]
   if (zxlog_mode != "BINARY") {
     sources += [ "src/text_format.cc" ]
   }
@@ -50,6 +50,11 @@ _build_id_sources = [
   "include/zxlog/crc32.h",
   "include/zxlog/logger.h",
   "include/zxlog/error.h",
+  "include/zxlog/identity.h",
+  "src/identity.cc",
+  "tools/build_id.py",
+  "tools/extract_dictionary.py",
+  "tools/strip_metadata.py",
   "include/zxlog/protocol.h",
   "include/zxlog/site.h",
   "include/zxlog/zxlog.h",
@@ -102,12 +107,14 @@ action("zxlog_dictionary") {
   outputs = [
     "$root_out_dir/zxlog.zdict",
     "$root_out_dir/zxlog_dictionary.json",
+    "$root_out_dir/zxlog_demo_identified",
   ]
   args = [
     "--elf", rebase_path(inputs[0], root_build_dir),
     "--build-id-file", rebase_path(inputs[1], root_build_dir),
     "--output", rebase_path(outputs[0], root_build_dir),
     "--json", rebase_path(outputs[1], root_build_dir),
+    "--patched-elf", rebase_path(outputs[2], root_build_dir),
   ]
 }
 
@@ -116,11 +123,15 @@ action("zxlog_dictionary") {
 action("prepare_runtime_image") {
   script = "//tools/strip_metadata.py"
   deps = [ ":zxlog_dictionary", ":zxlog_demo_raw" ]
-  inputs = [ "$root_out_dir/zxlog_demo_raw" ]
-  outputs = [ "$root_out_dir/zxlog_demo" ]
+  inputs = [ "$root_out_dir/zxlog_demo_identified", "$root_out_dir/zxlog.zdict",
+             "$root_out_dir/zxlog_dictionary.json", "tools/extract_dictionary.py" ]
+  outputs = [ "$root_out_dir/zxlog_demo", "$root_out_dir/zxlog_demo.manifest.json" ]
   args = [
     "--input", rebase_path(inputs[0], root_build_dir),
     "--output", rebase_path(outputs[0], root_build_dir),
+    "--dict", rebase_path(inputs[1], root_build_dir),
+    "--metadata-json", rebase_path(inputs[2], root_build_dir),
+    "--manifest", rebase_path(outputs[1], root_build_dir),
   ]
 }
 
@@ -148,23 +159,29 @@ action("zxlog_multi_dictionary") {
   script = "//tools/extract_dictionary.py"
   deps = [ ":zxlog_multi_raw", ":generate_build_id" ]
   inputs = [ "$root_out_dir/zxlog_multi_raw", "$root_gen_dir/build_id.txt" ]
-  outputs = [ "$root_out_dir/multi.zdict", "$root_out_dir/multi_dictionary.json" ]
+  outputs = [ "$root_out_dir/multi.zdict", "$root_out_dir/multi_dictionary.json",
+              "$root_out_dir/zxlog_multi_identified" ]
   args = [
     "--elf", rebase_path(inputs[0], root_build_dir),
     "--build-id-file", rebase_path(inputs[1], root_build_dir),
     "--output", rebase_path(outputs[0], root_build_dir),
     "--json", rebase_path(outputs[1], root_build_dir),
+    "--patched-elf", rebase_path(outputs[2], root_build_dir),
   ]
 }
 
 action("prepare_multi_image") {
   script = "//tools/strip_metadata.py"
   deps = [ ":zxlog_multi_dictionary", ":zxlog_multi_raw" ]
-  inputs = [ "$root_out_dir/zxlog_multi_raw" ]
-  outputs = [ "$root_out_dir/zxlog_multi" ]
+  inputs = [ "$root_out_dir/zxlog_multi_identified", "$root_out_dir/multi.zdict",
+             "$root_out_dir/multi_dictionary.json", "tools/extract_dictionary.py" ]
+  outputs = [ "$root_out_dir/zxlog_multi", "$root_out_dir/zxlog_multi.manifest.json" ]
   args = [
     "--input", rebase_path(inputs[0], root_build_dir),
     "--output", rebase_path(outputs[0], root_build_dir),
+    "--dict", rebase_path(inputs[1], root_build_dir),
+    "--metadata-json", rebase_path(inputs[2], root_build_dir),
+    "--manifest", rebase_path(outputs[1], root_build_dir),
   ]
 }
 
@@ -190,10 +207,33 @@ group("zxlog_all") {
   deps = [ ":prepare_runtime_image", ":zxlog_unit", ":zxlog_decode" ]
 }
 
+action("check_artifacts") {
+  script = "//tests/artifacts.py"
+  deps = [ ":prepare_runtime_image", ":prepare_multi_image", ":zxlog_decode",
+           ":generate_build_id", ":zxlog_dictionary", ":zxlog_multi_dictionary",
+           ":zxlog_demo_raw", ":zxlog_multi_raw" ]
+  inputs = [
+    "$root_out_dir/zxlog_demo", "$root_out_dir/zxlog_multi",
+    "$root_out_dir/zxlog_demo_raw", "$root_out_dir/zxlog_multi_raw",
+    "$root_out_dir/zxlog_demo_identified", "$root_out_dir/zxlog_multi_identified",
+    "$root_out_dir/zxlog.zdict", "$root_out_dir/multi.zdict",
+    "$root_out_dir/zxlog_demo.manifest.json", "$root_out_dir/zxlog_multi.manifest.json",
+    "$root_out_dir/zxlog_dictionary.json", "$root_gen_dir/build_id.txt",
+    "$root_out_dir/zxlog_decode", "tools/extract_dictionary.py", "tools/strip_metadata.py",
+    "tools/decode.py",
+  ]
+  outputs = [ "$root_out_dir/check_artifacts.ok" ]
+  args = [
+    "--build", rebase_path(root_out_dir, root_build_dir),
+    "--mode", zxlog_mode,
+    "--stamp", rebase_path(outputs[0], root_build_dir),
+  ]
+}
+
 # ninja -C out/Release check: end-to-end test on the build products.
 action("check") {
   script = "//tests/integration.py"
-  deps = [ ":prepare_runtime_image", ":zxlog_dictionary", ":zxlog_unit", ":zxlog_decode", ":check_multi" ]
+  deps = [ ":prepare_runtime_image", ":zxlog_dictionary", ":zxlog_unit", ":zxlog_decode", ":check_multi", ":check_artifacts" ]
   inputs = [
     "$root_out_dir/zxlog_demo",
     "$root_out_dir/zxlog_unit",

@@ -3,6 +3,7 @@
 #include "zxlog/site.h"
 #include "zxlog/crc32.h"
 #include "zxlog/error.h"
+#include "zxlog/identity.h"
 #include <fmt/format.h>
 #include <array>
 #include <atomic>
@@ -50,7 +51,7 @@ struct Options {
     std::string binary_path = "robot.blog";
     std::string text_path = "robot.log";
     std::string dictionary_path = "robot.zdict";
-    std::array<std::uint8_t, 16> build_id{};
+    std::array<std::uint8_t, 16> build_id = linked_build_id();
     std::uint64_t max_file_bytes = 1u << 20;
     unsigned max_files = 4;  // active + up to 3 rotated archives
     std::size_t io_batch_bytes = 16384;

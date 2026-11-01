@@ -5,6 +5,7 @@ No pyelftools dependency. The extractor also fails builds on EventID collisions.
 """
 import argparse
 import json
+import hashlib
 import struct
 from pathlib import Path
 
@@ -14,7 +15,9 @@ TYPES = {1: 'i8', 2: 'u8', 3: 'i16', 4: 'u16', 5: 'i32', 6: 'u32',
          7: 'i64', 8: 'u64', 9: 'f32', 10: 'f64', 11: 'bool', 12: 'char', 13: 'str'}
 
 
-def elf_section(data: bytes, section_name: str) -> bytes:
+def elf_section_range(data: bytes, section_name: str):
+    if len(data) < 64:
+        raise ValueError('truncated ELF header')
     if data[:4] != b'\x7fELF' or data[5] != 1:
         raise ValueError('expected little-endian ELF')
     is_64 = data[4] == 2
@@ -49,8 +52,13 @@ def elf_section(data: bytes, section_name: str) -> bytes:
             _, _, _, _, start, size, *_ = header
             if start + size > len(data):
                 raise ValueError('truncated ELF metadata section')
-            return data[start:start + size]
+            return start, size
     raise ValueError(f'ELF section {section_name!r} not found (check used/retain/KEEP)')
+
+
+def elf_section(data: bytes, section_name: str) -> bytes:
+    start, size = elf_section_range(data, section_name)
+    return data[start:start + size]
 
 
 def read_sites(data: bytes):
@@ -114,18 +122,34 @@ def main():
     ap.add_argument('--output', required=True)
     ap.add_argument('--json', required=True)
     ap.add_argument('--build-id-file', required=True)
+    ap.add_argument('--patched-elf', required=True)
     a = ap.parse_args()
-    build_id = bytes.fromhex(Path(a.build_id_file).read_text().strip())
-    if len(build_id) != 16:
-        raise ValueError('build ID must have exactly 16 bytes')
-    entries = read_sites(elf_section(Path(a.elf).read_bytes(), 'zxlog_meta'))
+    source_id = bytes.fromhex(Path(a.build_id_file).read_text().strip())
+    if len(source_id) != 16:
+        raise ValueError('source build ID must have exactly 16 bytes')
+    raw = Path(a.elf).read_bytes()
+    start, size = elf_section_range(raw, 'zxlog_identity')
+    if size != 16 or any(raw[start:start + size]):
+        raise ValueError('expected one unfinalized 16-byte ELF identity')
+    if Path(a.elf).resolve() == Path(a.patched_elf).resolve():
+        raise ValueError('patched ELF must not overwrite the linker output')
+    entries = read_sites(elf_section(raw, 'zxlog_meta'))
+    build_id = hashlib.sha256(b'zxlog-linked-image-v1\0' + source_id + raw).digest()[:16]
+    patched = raw[:start] + build_id + raw[start + size:]
+    Path(a.patched_elf).parent.mkdir(parents=True, exist_ok=True)
+    Path(a.patched_elf).write_bytes(patched)
+    Path(a.patched_elf).chmod(Path(a.elf).stat().st_mode)
     write_dict(Path(a.output), entries, build_id)
     for e in entries:
         e['level'] = LEVELS[e['level']]
         e['types'] = [TYPES[t] for t in e['types']]
         e['id'] = f"0x{e['id']:08x}"
     Path(a.json).write_text(json.dumps({
-        'schema': 'zxlog-v1', 'build_id': build_id.hex(), 'events': entries
+        'schema': 'zxlog-v1', 'build_id': build_id.hex(), 'events': entries,
+        'source_build_id': source_id.hex(),
+        'raw_elf_sha256': hashlib.sha256(raw).hexdigest(),
+        'identified_elf_sha256': hashlib.sha256(patched).hexdigest(),
+        'dictionary_sha256': hashlib.sha256(Path(a.output).read_bytes()).hexdigest(),
     }, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
     print(f'Extracted {len(entries)} LogSites → {a.output}')
 

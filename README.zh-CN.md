@@ -68,9 +68,23 @@ ninja -C out/Runtime check
 
 正式构建工具链由 `build/toolchain/BUILD.gn` 定义；入口为 `.gn`、`build/BUILDCONFIG.gn`、`BUILD.gn`。`zxlog_mode` 取 `TEXT`（1）、`BINARY`（2）或 `RUNTIME`（3），默认 `BINARY`。`zxlog_optimize` 默认 `true`。
 
-GN 目标：`zxlog` 静态库、`generate_build_id`、`zxlog_demo_raw`、`zxlog_dictionary`、`prepare_runtime_image`、`zxlog_unit`、`zxlog_decode`、`zxlog_all`、`check`。`check` 同时依赖 `check_multi`，后者为 `zxlog_multi_raw` 单独提取 `multi.zdict`、剥离部署镜像并验证多实例场景。
+GN 目标：`zxlog` 静态库、`generate_build_id`、`zxlog_demo_raw`、`zxlog_dictionary`、`prepare_runtime_image`、`zxlog_unit`、`zxlog_decode`、`zxlog_all`、`check`。`check` 同时依赖 `check_artifacts`（镜像、字典和清单匹配回归）及 `check_multi`，后者为 `zxlog_multi_raw` 单独提取 `multi.zdict`、剥离部署镜像并验证多实例场景。
 
-**集成到其它程序时注意**：字典提取必须对最终可执行 ELF（而不是 `libzxlog.a`）执行；用于生成 BuildID 的输入列表需要覆盖本应用所有 LogSite 相关源码、编译器/格式定义与构建选项。必要时使用 `-fmacro-prefix-map` 统一 `__FILE__` 路径。字典应与可执行文件一起归档；不能用仅源文件清单的哈希替代对最终 ELF 的构建追踪。
+**集成到其它程序时注意**：字典提取必须对最终可执行 ELF（而不是 `libzxlog.a`）执行。`gen/build_id.txt` 现在只是源码构建指纹；实际 BuildID 是该指纹与完整链接 ELF 的 SHA-256 派生值（取 16 字节），包含该程序实际日志元数据。同一源码清单下不同的可执行文件也会产生不同标识。源码指纹输入应覆盖应用源码和构建规则；必要时使用 `-fmacro-prefix-map` 统一 `__FILE__` 路径。
+
+构建流程为 `raw ELF → 提取字典并写入镜像标识 → 校验配套文件并剥离元数据 → 部署镜像 + 字典 + manifest`。标识保存在运行时保留的 `zxlog_identity` 节，通过 volatile 读取避免优化/LTO 固化占位值。未完成处理的 raw ELF 不能初始化 logger。`Options::build_id` 默认读取当前镜像标识，手动覆盖时也必须匹配；生成的 `zxlog::build::kBuildId` 保留兼容访问，但不再是编译期常量。
+
+GN 自动执行完整流程。外部构建必须编入 `src/identity.cc`、使用链接脚本，并按以下步骤完成最终 ELF；不得部署 `app_raw`：
+
+```bash
+python3 tools/extract_dictionary.py --elf app_raw \
+  --build-id-file source_build_id.txt --output app.zdict \
+  --json app.dictionary.json --patched-elf app_identified
+python3 tools/strip_metadata.py --input app_identified --output app \
+  --dict app.zdict --metadata-json app.dictionary.json --manifest app.manifest.json
+```
+
+`source_build_id.txt` 由 `tools/build_id.py` 生成。提取清单记录 raw/identified ELF 和字典的 SHA-256；部署清单进一步记录剥离后 ELF 的 SHA-256。打包工具拒绝混用镜像、字典或清单。部署镜像、字典和 manifest 应成套归档；旧日志仍使用其原始字典解码，日志与字典的 wire 格式未改变。
 
 GN 的 `zxlog` 目标会通过公共配置将 `build/zxlog_meta.ld` 传递给依赖它的可执行文件。使用其它构建系统时，也需以 `-fdata-sections` 编译，并在最终链接时添加 `-Wl,-T,/path/to/zxlog/build/zxlog_meta.ld`。GCC 12 会忽略模板内静态变量的 `section` 属性（[GCC PR c++/88061](https://gcc.gnu.org/pipermail/gcc-bugs/2023-December/846120.html)），将日志元数据放入 `.rodata.*`；链接脚本在默认 `.rodata` 匹配之前，将这些节与正常的 `zxlog_meta` 输入节归并，并用 `KEEP` 保留。先提取字典，再从部署镜像剥离 `zxlog_meta`。
 
@@ -221,7 +235,8 @@ python3 tools/decode.py --dict out/Binary/zxlog.zdict \
 `ninja -C out/<Mode> check` 自动执行：
 
 - C++17 单元测试与编译期错误检查（不合法格式必须编译失败）
-- 三种构建模式，BuildID/字典校验
+- 三种构建模式，BuildID/字典校验，拒绝 raw ELF 初始化及不同程序的字典混用
+- 最终镜像身份与配套清单哈希校验，拒绝字典篡改或重复固化
 - 十九个日志调用点、扩展 fmt 格式、自定义强类型
 - 四线程并发生产、队列满丢弃统计、线程退出后队列回收
 - CRC 字节翻转、截断损坏、严格解码失败和尽力恢复
@@ -236,7 +251,7 @@ python3 tools/decode.py --dict out/Binary/zxlog.zdict \
 
 2026-11-01 本地验证使用 GCC 12.3.0、GN 2318、Ninja 1.10.1。`BINARY/TEXT/RUNTIME` 的 `gn gen`、`gn check` 和完整 `ninja -C out/<Mode> check` 均通过；`BINARY` 的 `zxlog_optimize=false` 构建也通过。上述集成场景按各模式适用分支执行，部署镜像额外检查正常日志和被级别过滤日志的格式字符串均已移除。上线前还应在实际目标工具链、文件系统、编译优化选项（特别是 LTO）上做构建、性能和断电测试。
 
-多实例改造另使用 Clang 21.1.5 `-O1 -g` 验证：RUNTIME 的 AddressSanitizer/UndefinedBehaviorSanitizer 和 BINARY 的 ThreadSanitizer 均通过完整多实例场景，包含元数据提取、部署镜像剥离和两套解码器核对，未报告检测器错误。
+本轮可靠性修复使用 Clang 21.1.5 `-O1 -g` 验证：RUNTIME 的 AddressSanitizer/UndefinedBehaviorSanitizer 和 ThreadSanitizer 均通过单元及完整多实例场景，包含 I/O 故障注入、镜像标识固化、元数据剥离和两套解码器核对，未报告检测器错误。GCC 12.3.0 `-O2 -flto` 的 RUNTIME 多实例流程也通过，运行时标识未被优化为占位值。
 
 历史手工验证（多实例改造前）：GCC 12.3.0 的 `-O2 -flto` BINARY 示例通过完整集成测试；Clang 21.1.5 的 `-O1 -g -fsanitize=address,undefined` 单元测试与 BINARY 示例也通过，未报告 sanitizer 错误。两者均覆盖字典提取和部署镜像剥离，C++ 离线解码器复用常规 GN 构建产物。
 
@@ -248,9 +263,9 @@ src/logger.cc             多实例生命周期、SPSC 注册、实例内排序�
 src/path_lease.{h,cc}     进程内输出路径及归档命名空间占用检查
 src/file_writer.{h,cc}    批量写入、CRC 文件恢复、轮转、fdatasync
 src/text_format.{h,cc}    构建字典加载、{fmt} 文本恢复
-tools/build_id.py         构建 ID
-tools/extract_dictionary.py  ELF 字典提取与冲突校验
-tools/strip_metadata.py   剥离运行镜像里的构建期元数据
+tools/build_id.py         源码指纹及运行时标识访问头文件
+tools/extract_dictionary.py  最终 ELF 身份固化、字典提取与冲突校验
+tools/strip_metadata.py   配套校验、剥离构建期元数据并生成部署清单
 tools/decode.py           Python v1/v2 离线解码和恢复
 tools/decode.cc           C++ {fmt} 一致性离线解码器
 third_party/fmt/          MIT 许可的 fmt 12.1.0 头文件子集
