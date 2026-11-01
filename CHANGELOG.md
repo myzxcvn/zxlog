@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bound rendered text with max_text_bytes (64 KiB by default) and the file quota. Count rejected text separately without poisoning the writer or blocking later records.
+
 - Encode each argument once into a bounded destination; reject oversize events without publishing partial records. Enforce matching, supported and noexcept LogAdapter conversions.
 
 - Add `Logger::create()` and dual `ZX_LOG(level, ...)` / `ZX_LOG(logger, level, ...)` forms, accepting logger references and raw/unique/shared pointers. Evaluate logger expressions once and skip arguments for null, disabled or closed instances.

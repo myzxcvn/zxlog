@@ -168,6 +168,33 @@ void isolation(const Fixture &f) {
     global.shutdown();
 }
 
+void text_limits(const Fixture &f) {
+#if ZXLOG_BUILD_MODE != 2
+    auto options = f.options("text_limits");
+    options.initial_mode = zxlog::OutputMode::Text;
+    options.max_file_bytes = 1100;
+    auto logger = f.create(options);
+    ZX_LOG(logger, INFO, "before oversized text");
+    ZX_LOG(logger, INFO, "{:2000}", 1);
+    ZX_LOG(logger, INFO, "{:{}}", 1, 1000000);
+    ZX_LOG(logger, INFO, "after oversized text");
+    flush(*logger);
+    require(logger->stats().accepted == 4 && logger->stats().text_too_large == 2 &&
+            logger->stats().io_errors == 0, "oversize text poisoned output");
+    options = f.options("text_budget");
+    options.initial_mode = zxlog::OutputMode::Text;
+    options.max_text_bytes = 48;
+    auto budget = f.create(options);
+    ZX_LOG(budget, INFO, "{:60}", 1);
+    ZX_LOG(budget, INFO, "budget survives");
+    flush(*budget);
+    require(budget->stats().text_too_large == 1 && budget->stats().io_errors == 0,
+            "text budget ignored");
+#else
+    (void)f;
+#endif
+}
+
 void encoding(const Fixture &f) {
     auto logger = f.create("encoding");
     ChangingText changing;
@@ -391,6 +418,8 @@ int main(int argc, char **argv) {
         const std::string scenario = argv[1];
         if (scenario == "isolation")
             isolation(fixture);
+        else if (scenario == "text_limits")
+            text_limits(fixture);
         else if (scenario == "encoding")
             encoding(fixture);
         else if (scenario == "churn")

@@ -67,7 +67,7 @@ def main(a):
         return result
 
     roots = {}
-    for scenario in ('isolation', 'encoding', 'churn', 'capacity', 'thread_churn', 'close', 'conflicts', 'rotation'):
+    for scenario in ('isolation', 'text_limits', 'encoding', 'churn', 'capacity', 'thread_churn', 'close', 'conflicts', 'rotation'):
         root = cases / scenario
         root.mkdir()
         roots[scenario] = root
@@ -113,6 +113,10 @@ def main(a):
 
     assert records(roots['encoding'], 'encoding') == [('INFO', 'adapter once'),
                                                        ('INFO', 'after rejected records')]
+    if a.mode != 'BINARY':
+        assert records(roots['text_limits'], 'text_limits') == [
+            ('INFO', 'before oversized text'), ('INFO', 'after oversized text')]
+        assert records(roots['text_limits'], 'text_budget') == [('INFO', 'budget survives')]
     churn = records(roots['churn'], 'churn')
     last = int(churn[-1][1].split()[-1])
     assert len(churn) == 3 and churn == [('INFO', f'generation {i}') for i in range(last - 2, last + 1)]

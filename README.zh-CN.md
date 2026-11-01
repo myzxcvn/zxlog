@@ -205,6 +205,7 @@ python3 tools/decode.py --dict out/Binary/zxlog.zdict \
 - 每个 logger 为各生产线程分配独立的预分配 SPSC ring；记录发布不需要共享互斥锁。实例内 `sequence` 保证日志与控制事件的顺序。线程退出后，其各个 ring 在消费完毕时可以重新注册给其它线程。
 - 每个 logger 默认 `8` 个生产者 ring，每 ring `32` 槽，每槽略高于 `1024` 字节；**每实例队列本身约占 0.26 MiB**，另有线程栈、写缓冲和文本字典内存。可缩减 `max_producers` 和 `per_thread_slots`；注册满/队列满/记录超长会丢弃，并计入该实例的 `Stats::dropped`。
 - 每线程最多同时绑定 `Logger::kMaxLoggersPerThread`（32）个活跃 logger，达到上限时向新实例写入会计入其 `dropped`。TLS 以不复用的实例 ID 区分生命周期，用弱引用管理注册；关闭实例后队列内存释放，其 TLS 槽位可复用，不必等生产线程退出。稳定调用路径不增加堆分配。
+- 文本行（含前缀和换行）受 `max_text_bytes`（默认 64 KiB，最大 1 MiB）及 `max_file_bytes` 的较小值限制；超限整条丢弃并计入 `text_too_large`，writer 继续工作。文本渲染的输出缓冲受限，离线 C++ 解码器默认也限制单条正文为 64 KiB。
 - `Stats::accepted` 表示成功入队，**不代表已经落盘**。`flush(false)` 等待以前的事件被后台写入，`flush(true)` 进一步执行 `fdatasync`。仍然不能保证存储硬件在掉电时完成内部刷新。
 - 异常退出后再次启动：校验有效记录前缀、截断尾部损坏内容、归档旧活动日志并创建新文件；中间 CRC 错误的后续数据在设备恢复时保守丢弃。离线 `--recover` 可以尝试跨损坏点搜索下一条有效记录。日志队列中尚未写入的记录无法凭空恢复。
 - 记录时钟为单调纳秒；文件头记录 wall/steady 关联。**不同重启文件不要仅按记录的 steady-ns 合并排序**。

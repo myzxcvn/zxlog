@@ -120,6 +120,7 @@ bool Logger::initialize(const Options &options, std::string *error) {
     constexpr auto minimum_file_bytes =
         ZXLOG_BUILD_MODE == 1 ? kMaxRecordSize : kBinaryHeaderSize + kMaxRecordSize;
     if (options.max_files < 1 || options.max_files > 256 || options.io_batch_bytes == 0 ||
+        options.max_text_bytes == 0 || options.max_text_bytes > (1u << 20) ||
         options.io_batch_bytes > (1u << 20) || options.max_file_bytes < minimum_file_bytes ||
         options.max_file_bytes > (std::uint64_t(1) << 40)) {
         if (error) {
@@ -399,19 +400,27 @@ void Logger::write_log(const Slot &slot) {
         return;
     }
 
-    std::string rendered;
-    if (!detail::render_text(*entry, bytes + kRecordHeaderSize, slot.length - kRecordHeaderSize, rendered)) {
-        note_io_error();
-        return;
-    }
-
     const auto stamp = detail::read_u64(bytes + 8);
     const auto delta = stamp >= start_steady_ns_ ? stamp - start_steady_ns_ : 0;
     std::ostringstream out;
     out << "[+" << delta / 1000000000ull << '.' << std::setw(3) << std::setfill('0')
-        << (delta / 1000000ull) % 1000ull << "] [" << detail::level_name(entry->level) << "] " << rendered
-        << '\n';
-    const auto line = out.str();
+        << (delta / 1000000ull) % 1000ull << "] [" << detail::level_name(entry->level) << "] ";
+    auto line = out.str();
+    const auto limit = std::min<std::uint64_t>(options_.max_text_bytes, options_.max_file_bytes);
+    if (line.size() + 1 > limit) {
+        text_too_large_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    std::string rendered;
+    bool too_large = false;
+    if (!detail::render_text(*entry, bytes + kRecordHeaderSize, slot.length - kRecordHeaderSize,
+                             rendered, limit - line.size() - 1, &too_large)) {
+        if (too_large) text_too_large_.fetch_add(1, std::memory_order_relaxed);
+        else note_io_error();
+        return;
+    }
+    line += rendered;
+    line += '\n';
     if (!text_file_->append(reinterpret_cast<const std::uint8_t *>(line.data()), line.size())) {
         note_io_error();
     }
@@ -520,6 +529,7 @@ Stats Logger::stats() const noexcept {
     stats.accepted = accepted_.load(std::memory_order_relaxed);
     stats.dropped = dropped_.load(std::memory_order_relaxed);
     stats.io_errors = io_errors_.load(std::memory_order_relaxed);
+    stats.text_too_large = text_too_large_.load(std::memory_order_relaxed);
     if (binary_file_) {
         stats.rotations += binary_file_->rotations();
         stats.repaired_bytes += binary_file_->repaired_bytes();

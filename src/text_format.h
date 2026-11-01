@@ -30,7 +30,8 @@ private:
 };
 
 // Returns false on truncated/malformed payload or unsupported format.
-bool render_text(const DictionaryEntry &entry, const std::uint8_t *data, std::size_t size, std::string &out);
+bool render_text(const DictionaryEntry &entry, const std::uint8_t *data, std::size_t size, std::string &out,
+                 std::size_t max_bytes = 64u << 10, bool *too_large = nullptr);
 const char *level_name(Level level) noexcept;
 
 }  // namespace zxlog::detail

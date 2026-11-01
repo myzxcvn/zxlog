@@ -426,9 +426,12 @@ bool FileWriter::flush_pending() {
 }
 
 bool FileWriter::append(const std::uint8_t *bytes, std::size_t size) {
-    if (failed_ || fd_ < 0 || (binary_ && size > kMaxRecordSize) ||
-        cfg_.max_file_bytes < (binary_ ? kBinaryHeaderSize : 0) + size) {
-        fail("log event exceeds configured file limit");
+    if (failed_ || fd_ < 0) {
+        return false;
+    }
+    if ((binary_ && size > kMaxRecordSize) ||
+        size > cfg_.max_file_bytes - (binary_ ? kBinaryHeaderSize : 0)) {
+        // A bad event must not poison an otherwise healthy output.
         return false;
     }
 

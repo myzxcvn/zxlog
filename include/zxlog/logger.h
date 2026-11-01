@@ -52,6 +52,7 @@ struct Options {
     std::uint64_t max_file_bytes = 1u << 20;
     unsigned max_files = 4;  // active + up to 3 rotated archives
     std::size_t io_batch_bytes = 16384;
+    std::size_t max_text_bytes = 64u << 10;  // complete line, including prefix/newline
     unsigned sync_every_records = 0;  // 0 = only explicit flush(true) / rotation sync
     bool repair_on_start = true;
     bool sync_on_rotate = true;
@@ -64,6 +65,7 @@ struct Stats {
     std::uint64_t rotations = 0;
     std::uint64_t repaired_bytes = 0;
     std::uint64_t sync_errors = 0;
+    std::uint64_t text_too_large = 0;  // accepted events rejected by text rendering
 };
 
 class Logger {
@@ -196,6 +198,7 @@ private:
     std::atomic<bool> accepting_{false};
     std::atomic<Level> minimum_{Level::Off};
     std::atomic<std::uint64_t> accepted_{0}, dropped_{0}, io_errors_{0};
+    std::atomic<std::uint64_t> text_too_large_{0};
     std::atomic<std::uint64_t> sequence_{0};
     std::atomic<std::uint64_t> record_state_{kClosingBit};
     std::uint64_t consumed_sequence_ = 0;  // consumer thread only

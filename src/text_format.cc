@@ -214,7 +214,10 @@ const DictionaryEntry *Dictionary::lookup(std::uint32_t id) const noexcept {
     return it == entries_.end() ? nullptr : &it->second;
 }
 
-bool render_text(const DictionaryEntry &entry, const std::uint8_t *data, std::size_t size, std::string &out) {
+bool render_text(const DictionaryEntry &entry, const std::uint8_t *data, std::size_t size, std::string &out,
+                 std::size_t max_bytes, bool *too_large) {
+    out.clear();
+    if (too_large) *too_large = false;
     std::vector<Arg> args;
     args.reserve(entry.types.size());
     const std::uint8_t *p = data;
@@ -268,7 +271,12 @@ bool render_text(const DictionaryEntry &entry, const std::uint8_t *data, std::si
     }
 
     try {
-        out = fmt::vformat(entry.format, store);
+        const auto result = fmt::vformat_to_n(std::back_inserter(out), max_bytes, entry.format, store);
+        if (result.size > max_bytes) {
+            out.clear();
+            if (too_large) *too_large = true;
+            return false;
+        }
         return true;
     } catch (const fmt::format_error &) {
         return false;
