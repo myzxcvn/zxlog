@@ -9,6 +9,7 @@
 - Add batched POSIX writer, bounded rotation, archive pruning, explicit `flush(true)` fdatasync, directory metadata sync, torn-record truncation on next startup, and conservative handling for invalid existing files.
 - Offline `--recover` mode scans past CRC-corrupted events and skips torn tails; default strict mode fails with diagnostic. Added C++ `zxlog_decode` that reuses the runtime {fmt} formatter for exact reconstruction, alongside the lightweight Python decoder.
 - Extend integration verification: corrupted records, legacy migration, torn headers, recovery after restart, thread churn, quotas, four-thread stress, compile-negative format checking, metadata stripping.
+- Collect and retain template-local LogSite metadata with `build/zxlog_meta.ld`, including GCC 12's `.rodata.*` fallback. Resolve integration-test executable paths before launching subprocesses. All three GN modes now pass the full `check` target with GCC 12.3.0.
 
 ### Intentional compatibility changes
 
@@ -21,4 +22,3 @@
 - No guarantees for queued records not persisted before abrupt shutdown; no signal-handler emergency path.
 - No multi-process shared file support and no hard realtime determinism.
 - Binary custom schemas limited to scalar `LogAdapter<T>` representation; Python formatter covers common scalar {fmt} syntax.
-- GN generation and dependency checks pass locally; with GCC 12.3.0, dictionary extraction fails because the linked ELF lacks `zxlog_meta`, blocking integration tests. See the README verification note.

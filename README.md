@@ -15,6 +15,8 @@ gn gen out/Runtime --args='zxlog_mode="RUNTIME"'
 ninja -C out/Runtime check
 ```
 
-**Verification note (2026-11-01):** With GCC 12.3.0, GN 2318 and Ninja 1.10.1, `gn gen`, `gn check`, unit tests and C++ decoder builds pass in all three modes. The full `check` target fails during dictionary extraction because the linked ELF lacks the `zxlog_meta` section; integration tests therefore have not run successfully on this toolchain. Source requires Linux GCC/Clang, POSIX, ELF, objcopy, Python 3, GN and Ninja for the full GN workflow.
+**Verification note (2026-11-01):** With GCC 12.3.0, GN 2318 and Ninja 1.10.1, `gn gen`, `gn check` and the full `check` target pass in all three modes, including extraction of 19 LogSites and metadata stripping. The BINARY build also passes with `zxlog_optimize=false`. Source requires Linux GCC/Clang, POSIX, ELF, objcopy, Python 3, GN and Ninja for the full GN workflow.
+
+GN propagates `build/zxlog_meta.ld` to executables using `zxlog`. External build systems must also compile with `-fdata-sections` and link with `-Wl,-T,/path/to/zxlog/build/zxlog_meta.ld`. The script retains metadata and collects template-local blobs that GCC 12 places in `.rodata.*` despite their `section` attribute ([GCC PR c++/88061](https://gcc.gnu.org/pipermail/gcc-bugs/2023-December/846120.html)). Extract the dictionary from the linked ELF before stripping `zxlog_meta` from the deployment image.
 
 Important limitations: single-process log path, no hard realtime guarantees, asynchronous data not yet flushed can be lost on process exit/power failure; Python offline formatter covers common scalar {fmt} syntax rather than arbitrary C++ custom formatters. See the Chinese README for additional details.

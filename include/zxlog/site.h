@@ -9,6 +9,8 @@
 
 // A self-contained, relocation-free ELF section record. The Python extractor
 // reads exactly this v1 wire layout, not the compiler's pointer representation.
+// Link with build/zxlog_meta.ld to collect template-local blobs on GCC versions
+// affected by PR c++/88061 and to retain them when linker garbage collection runs.
 #if defined(__GNUC__) || defined(__clang__)
 #  if defined(__has_attribute)
 #    if __has_attribute(retain)

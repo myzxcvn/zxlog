@@ -2,7 +2,7 @@
 
 **设计目标**：业务只使用一个 `LOG_INFO("...{}", arg)` 宏，所有生产线程只序列化类型化参数，单后台线程根据构建/运行模式输出文本或紧凑二进制。静态格式字符串、LogID、参数类型、源码位置在 **链接后从 ELF 提取为字典**；没有开机 LogSite 注册。
 
-> 平台：Linux/ELF + GCC/Clang，C++17，POSIX。2026-11-01 使用 GCC 12.3.0、GN 2318、Ninja 1.10.1 验证：三种模式的 `gn gen`、`gn check`、单元测试和 C++ 解码器构建通过；完整 `check` 在字典提取阶段因 ELF 缺少 `zxlog_meta` 节失败，集成测试尚未通过。需要 `python3`、`objcopy`、`gn` 和 `ninja` 执行正式 GN 流程。
+> 平台：Linux/ELF + GCC/Clang，C++17，POSIX。2026-11-01 使用 GCC 12.3.0、GN 2318、Ninja 1.10.1 验证：三种模式的 `gn gen`、`gn check` 和完整 `check` 通过，包含 19 个日志点的字典提取、集成测试及部署镜像元数据剥离。需要 `python3`、`objcopy`、`gn` 和 `ninja` 执行正式 GN 流程。
 
 ## 0.4 功能及设计边界
 
@@ -68,6 +68,8 @@ ninja -C out/Runtime check
 GN 目标：`zxlog` 静态库、`generate_build_id`、`zxlog_demo_raw`、`zxlog_dictionary`、`prepare_runtime_image`、`zxlog_unit`、`zxlog_decode`、`zxlog_all`、`check`。
 
 **集成到其它程序时注意**：字典提取必须对最终可执行 ELF（而不是 `libzxlog.a`）执行；用于生成 BuildID 的输入列表需要覆盖本应用所有 LogSite 相关源码、编译器/格式定义与构建选项。必要时使用 `-fmacro-prefix-map` 统一 `__FILE__` 路径。字典应与可执行文件一起归档；不能用仅源文件清单的哈希替代对最终 ELF 的构建追踪。
+
+GN 的 `zxlog` 目标会通过公共配置将 `build/zxlog_meta.ld` 传递给依赖它的可执行文件。使用其它构建系统时，也需以 `-fdata-sections` 编译，并在最终链接时添加 `-Wl,-T,/path/to/zxlog/build/zxlog_meta.ld`。GCC 12 会忽略模板内静态变量的 `section` 属性（[GCC PR c++/88061](https://gcc.gnu.org/pipermail/gcc-bugs/2023-December/846120.html)），将日志元数据放入 `.rodata.*`；链接脚本在默认 `.rodata` 匹配之前，将这些节与正常的 `zxlog_meta` 输入节归并，并用 `KEEP` 保留。先提取字典，再从部署镜像剥离 `zxlog_meta`。
 
 ## 快速使用
 
@@ -178,7 +180,9 @@ python3 tools/decode.py --dict out/Binary/zxlog.zdict \
 - 文件轮转、归档数量/大小配额、旧归档清理
 - 生产镜像已去除 `zxlog_meta` 节
 
-2026-11-01 本地验证使用 GCC 12.3.0、GN 2318、Ninja 1.10.1。`BINARY/TEXT/RUNTIME` 的 `gn gen`、`gn check`、`zxlog_unit` 构建与运行、`zxlog_decode` 构建均通过。三种模式的 `ninja -C out/<Mode> check` 均在字典提取阶段失败：链接后的 ELF 缺少 `zxlog_meta` 节，因此尚未执行上述集成场景；本次未运行 ASan/UBSan。需先修复该工具链下的元数据节生成问题，再验证完整流程。上线前还应在实际目标工具链、文件系统、编译优化选项（特别是 LTO）上做构建、性能和断电测试。
+2026-11-01 本地验证使用 GCC 12.3.0、GN 2318、Ninja 1.10.1。`BINARY/TEXT/RUNTIME` 的 `gn gen`、`gn check` 和完整 `ninja -C out/<Mode> check` 均通过；`BINARY` 的 `zxlog_optimize=false` 构建也通过。上述集成场景按各模式适用分支执行，部署镜像额外检查正常日志和被级别过滤日志的格式字符串均已移除。上线前还应在实际目标工具链、文件系统、编译优化选项（特别是 LTO）上做构建、性能和断电测试。
+
+补充手工构建验证：GCC 12.3.0 的 `-O2 -flto` BINARY 示例通过完整集成测试；Clang 21.1.5 的 `-O1 -g -fsanitize=address,undefined` 单元测试与 BINARY 示例也通过，未报告 sanitizer 错误。两者均覆盖字典提取和部署镜像剥离，C++ 离线解码器复用常规 GN 构建产物。
 
 ## 目录
 

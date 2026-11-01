@@ -26,6 +26,12 @@ def decoder_module():
     return mod
 
 def do_test(a):
+    # GN passes filenames relative to the build directory. subprocess searches
+    # PATH for bare names, so resolve executable paths before launching them.
+    for name in ('demo', 'unit', 'cpp_decoder'):
+        value = getattr(a, name)
+        if value:
+            setattr(a, name, str(Path(value).resolve()))
     work_root = Path(a.work)
     work_root.mkdir(parents=True, exist_ok=True)
     work = work_root / 'cases'
@@ -195,12 +201,19 @@ def do_test(a):
     spec = importlib.util.spec_from_file_location('extract_dictionary', ROOT / 'tools/extract_dictionary.py')
     ext = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ext)
+    demo_bytes = Path(a.demo).read_bytes()
     try:
-        ext.elf_section(Path(a.demo).read_bytes(), 'zxlog_meta')
+        ext.elf_section(demo_bytes, 'zxlog_meta')
     except ValueError:
         pass
     else:
         raise AssertionError('deployable image still contains static log dictionary')
+    # A missing section alone does not prove stripping worked: older GCC can
+    # place template-local LogSites in .rodata instead of the requested section.
+    assert b'Motor speed: {}, current: {:.2f}' not in demo_bytes, \
+        'deployable image still contains a LogSite format string'
+    assert b'Should not execute: {}' not in demo_bytes, \
+        'deployable image still contains a filtered LogSite format string'
 
     # A C++17 fmt error is a compile-time failure, not deferred to a log event.
     invalid = '#include "zxlog/zxlog.h"\nvoid f(){ LOG_INFO("{:x}", 1.5); }\n'

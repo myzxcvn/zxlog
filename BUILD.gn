@@ -24,12 +24,17 @@ config("common") {
   }
 }
 
+config("metadata_link") {
+  inputs = [ "build/zxlog_meta.ld" ]
+  ldflags = [ "-Wl,-T," + rebase_path(inputs[0], root_build_dir) ]
+}
+
 static_library("zxlog") {
   sources = [ "src/logger.cc", "src/file_writer.cc" ]
   if (zxlog_mode != "BINARY") {
     sources += [ "src/text_format.cc" ]
   }
-  public_configs = [ ":common" ]
+  public_configs = [ ":common", ":metadata_link" ]
   include_dirs = [ "src" ]
 }
 
@@ -40,6 +45,7 @@ _build_id_sources = [
   ".gn",
   "build/BUILDCONFIG.gn",
   "build/toolchain/BUILD.gn",
+  "build/zxlog_meta.ld",
   "include/zxlog/codec.h",
   "include/zxlog/crc32.h",
   "include/zxlog/logger.h",
