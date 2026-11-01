@@ -1,6 +1,7 @@
 #pragma once
 
 #include "zxlog/protocol.h"
+#include "zxlog/error.h"
 
 #include <array>
 #include <atomic>
@@ -38,6 +39,7 @@ public:
     bool good() const noexcept { return !failed_; }
     bool has_pending() const noexcept { return !failed_ && !pending_.empty(); }
     bool needs_sync() const noexcept { return !failed_ && unsynced_records_ != 0; }
+    const ErrorInfo &last_error() const noexcept { return last_error_; }  // consumer only
     std::uint64_t rotations() const noexcept { return rotations_.load(std::memory_order_relaxed); }
     std::uint64_t repaired_bytes() const noexcept { return repaired_bytes_.load(std::memory_order_relaxed); }
     std::uint64_t sync_errors() const noexcept { return sync_errors_.load(std::memory_order_relaxed); }
@@ -51,7 +53,7 @@ private:
     bool sync_directory();
     bool repair_existing();
     bool prune_excess_archives();
-    void fail(const char *reason, int err = 0);
+    void fail(const char *reason, int err = 0, ErrorCode code = ErrorCode::Write);
 
     int fd_ = -1;
     bool binary_ = false;
@@ -66,6 +68,7 @@ private:
     std::atomic<std::uint64_t> sync_errors_{0};
     unsigned unsynced_records_ = 0;
     std::string error_;
+    ErrorInfo last_error_;
 };
 
 }  // namespace zxlog::detail

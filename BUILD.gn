@@ -49,6 +49,7 @@ _build_id_sources = [
   "include/zxlog/codec.h",
   "include/zxlog/crc32.h",
   "include/zxlog/logger.h",
+  "include/zxlog/error.h",
   "include/zxlog/protocol.h",
   "include/zxlog/site.h",
   "include/zxlog/zxlog.h",
@@ -66,6 +67,7 @@ _build_id_sources = [
   "examples/basic.cc",
   "tests/unit.cc",
   "tests/multi_logger.cc",
+  "tests/fault_io.cc",
   "tools/decode.cc",
 ]
 
@@ -136,7 +138,8 @@ executable("zxlog_unit") {
 }
 
 executable("zxlog_multi_raw") {
-  sources = [ "tests/multi_logger.cc" ]
+  sources = [ "tests/multi_logger.cc", "tests/fault_io.cc" ]
+  ldflags = [ "-Wl,--wrap=write,--wrap=fdatasync,--wrap=rename" ]
   deps = [ ":zxlog", ":generate_build_id" ]
   include_dirs = [ "$root_gen_dir" ]
 }

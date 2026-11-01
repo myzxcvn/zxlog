@@ -67,7 +67,7 @@ def main(a):
         return result
 
     roots = {}
-    for scenario in ('isolation', 'periodic', 'text_limits', 'encoding', 'churn', 'capacity', 'thread_churn', 'close', 'conflicts', 'rotation'):
+    for scenario in ('isolation', 'diagnostics', 'periodic', 'text_limits', 'encoding', 'churn', 'capacity', 'thread_churn', 'close', 'conflicts', 'rotation'):
         root = cases / scenario
         root.mkdir()
         roots[scenario] = root
@@ -121,6 +121,11 @@ def main(a):
                            'severity': ['buffered before error', 'severity event'],
                            'sync_timer': ['sync timer event'], 'sync_level': ['sync level event']}.items():
         assert [m for _, m in records(roots['periodic'], name)] == messages
+    for i in range(1, 5):
+        assert ('INFO', 'recovered') in records(roots['diagnostics'], f'fault{i}')
+    if a.mode != 'BINARY':
+        assert records(roots['diagnostics'], 'format_error') == [('INFO', 'after bad format')]
+    assert records(roots['diagnostics'], 'producer_limit') == [('INFO', 'owns producer slot')]
     churn = records(roots['churn'], 'churn')
     last = int(churn[-1][1].split()[-1])
     assert len(churn) == 3 and churn == [('INFO', f'generation {i}') for i in range(last - 2, last + 1)]

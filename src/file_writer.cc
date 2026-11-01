@@ -53,8 +53,13 @@ bool read_at(int fd, std::uint8_t *p, std::size_t n, off_t offset) {
 
 FileWriter::~FileWriter() { close(); }
 
-void FileWriter::fail(const char *reason, int err) {
+void FileWriter::fail(const char *reason, int err, ErrorCode code) {
+    if (failed_) return;  // Preserve the original operation and errno.
     failed_ = true;
+    last_error_.code = code;
+    last_error_.system_error = err;
+    last_error_.operation = reason;
+    last_error_.path = cfg_.path;
     error_ = reason;
     if (err != 0) {
         error_ += ": ";
@@ -179,7 +184,7 @@ bool FileWriter::prune_excess_archives() {
 bool FileWriter::create_file() {
     fd_ = ::open(cfg_.path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
     if (fd_ < 0) {
-        fail("create log file failed", errno);
+        fail("create log file failed", errno, ErrorCode::Open);
         return false;
     }
 
@@ -196,7 +201,7 @@ bool FileWriter::create_file() {
 bool FileWriter::repair_existing() {
     int fd = ::open(cfg_.path.c_str(), O_RDWR | O_CLOEXEC);
     if (fd < 0) {
-        fail("open existing log for repair", errno);
+        fail("open existing log for repair", errno, ErrorCode::Open);
         return false;
     }
 
@@ -303,7 +308,7 @@ bool FileWriter::repair_existing() {
         repaired_bytes_ += total - valid;
         if (cfg_.sync_on_rotate && ::fdatasync(fd) != 0) {
             ++sync_errors_;
-            fail("repair fdatasync failed", errno);
+            fail("repair fdatasync failed", errno, ErrorCode::Sync);
             ::close(fd);
             return false;
         }
@@ -324,14 +329,14 @@ bool FileWriter::sync_file() {
     }
 
     ++sync_errors_;
-    fail("fdatasync failed", errno);
+    fail("fdatasync failed", errno, ErrorCode::Sync);
     return false;
 }
 
 bool FileWriter::sync_directory() {
     int directory = ::open(parent_dir(cfg_.path).c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (directory < 0) {
-        fail("open log directory for fsync", errno);
+        fail("open log directory for fsync", errno, ErrorCode::Sync);
         return false;
     }
 
@@ -340,7 +345,7 @@ bool FileWriter::sync_directory() {
     ::close(directory);
     if (result != 0) {
         ++sync_errors_;
-        fail("directory fsync failed", saved);
+        fail("directory fsync failed", saved, ErrorCode::Sync);
         return false;
     }
 
@@ -363,7 +368,7 @@ bool FileWriter::rotate() {
 
     if (cfg_.max_files == 1) {
         if (::unlink(cfg_.path.c_str()) != 0 && errno != ENOENT) {
-            fail("remove previous active log failed", errno);
+            fail("remove previous active log failed", errno, ErrorCode::Rotate);
             return false;
         }
     } else {
@@ -371,12 +376,12 @@ bool FileWriter::rotate() {
         for (unsigned i = cfg_.max_files - 1; i > 1; --i) {
             const auto from = archived(cfg_.path, i - 1);
             if (exists(from) && ::rename(from.c_str(), archived(cfg_.path, i).c_str()) != 0) {
-                fail("rotate archive failed", errno);
+                fail("rotate archive failed", errno, ErrorCode::Rotate);
                 return false;
             }
         }
         if (exists(cfg_.path) && ::rename(cfg_.path.c_str(), archived(cfg_.path, 1).c_str()) != 0) {
-            fail("rotate active file failed", errno);
+            fail("rotate active file failed", errno, ErrorCode::Rotate);
             return false;
         }
     }
@@ -464,7 +469,7 @@ bool FileWriter::flush(bool durable) {
 
 void FileWriter::close() noexcept {
     if (fd_ >= 0) {
-        (void)flush_pending();
+        try { (void)flush_pending(); } catch (...) { failed_ = true; }
         ::close(fd_);
         fd_ = -1;
     }

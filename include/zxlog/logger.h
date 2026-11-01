@@ -2,6 +2,7 @@
 
 #include "zxlog/site.h"
 #include "zxlog/crc32.h"
+#include "zxlog/error.h"
 #include <fmt/format.h>
 #include <array>
 #include <atomic>
@@ -11,6 +12,7 @@
 #include <cstdint>
 #include <deque>
 #include <future>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -57,6 +59,8 @@ struct Options {
     std::chrono::milliseconds sync_interval{0};     // periodic fdatasync, opt-in
     Level flush_on_level = Level::Off;
     Level sync_on_level = Level::Off;
+    std::function<void(const ErrorInfo &)> error_handler;  // backend thread; must return promptly
+    std::chrono::milliseconds error_interval{1000};      // rate limit per instance
     unsigned sync_every_records = 0;  // 0 = only explicit flush(true) / rotation sync
     bool repair_on_start = true;
     bool sync_on_rotate = true;
@@ -70,6 +74,9 @@ struct Stats {
     std::uint64_t repaired_bytes = 0;
     std::uint64_t sync_errors = 0;
     std::uint64_t text_too_large = 0;  // accepted events rejected by text rendering
+    std::uint64_t queue_full = 0, producer_limit = 0, tls_limit = 0, record_too_large = 0;
+    std::uint64_t invalid_records = 0, unknown_sites = 0, format_errors = 0;
+    std::uint64_t write_errors = 0, open_errors = 0, rotate_errors = 0, internal_errors = 0;
 };
 
 class Logger {
@@ -84,7 +91,7 @@ public:
 
     bool initialize(const Options &options, std::string *error = nullptr);
     bool enabled(Level level) const noexcept {
-        return accepting_.load(std::memory_order_acquire) &&
+        return !in_error_handler_ && accepting_.load(std::memory_order_acquire) &&
                static_cast<unsigned>(level) >=
                    static_cast<unsigned>(minimum_.load(std::memory_order_relaxed)) &&
                level != Level::Off;
@@ -98,12 +105,14 @@ public:
     // shutdown may overlap logging; destruction requires all callers to stop.
     void shutdown();
     Stats stats() const noexcept;
+    ErrorInfo last_error() const;
+    bool output_failed() const noexcept { return output_failed_.load(std::memory_order_relaxed); }
 
     template <typename... Args>
     void record(Level level, std::uint32_t site_id, Args &&...args) noexcept {
         static_assert(((detail::type_of<Args>() != Type::Invalid) && ...),
                       "zxlog: argument cannot be serialized");
-        if (!accepting_.load(std::memory_order_acquire) || !enter_record()) {
+        if (in_error_handler_ || !accepting_.load(std::memory_order_acquire) || !enter_record()) {
             return;
         }
 
@@ -117,6 +126,7 @@ public:
 
         const std::uint64_t tail = q->write.load(std::memory_order_relaxed);
         if (tail - q->read.load(std::memory_order_acquire) >= q->slots.size()) {
+            queue_full_.fetch_add(1, std::memory_order_relaxed);
             dropped_.fetch_add(1, std::memory_order_relaxed);
             finish();
             return;
@@ -126,6 +136,7 @@ public:
         std::uint8_t *data = slot.bytes.data();
         std::uint8_t *p = data + kRecordHeaderSize;
         if (!(detail::write_value(p, data + slot.bytes.size(), args) && ...)) {
+            record_too_large_.fetch_add(1, std::memory_order_relaxed);
             // An incomplete slot is never published and consumes no sequence.
             dropped_.fetch_add(1, std::memory_order_relaxed);
             finish();
@@ -198,13 +209,22 @@ private:
     bool flush_writers(bool durable);
     static std::uint64_t ns_wall() noexcept;
     static std::uint64_t ns_steady() noexcept;
-    void note_io_error() noexcept { io_errors_.fetch_add(1, std::memory_order_relaxed); }
+    void note_error(ErrorCode code, const char *operation, const std::string &path = {}, int error = 0) noexcept;
+    void note_writer_error(const detail::FileWriter &writer) noexcept;
+    static thread_local bool in_error_handler_;
 
     const std::uint64_t instance_id_;
     std::atomic<bool> accepting_{false};
     std::atomic<Level> minimum_{Level::Off};
     std::atomic<std::uint64_t> accepted_{0}, dropped_{0}, io_errors_{0};
     std::atomic<std::uint64_t> text_too_large_{0};
+    std::atomic<std::uint64_t> queue_full_{0}, producer_limit_{0}, tls_limit_{0}, record_too_large_{0};
+    std::atomic<std::uint64_t> invalid_records_{0}, unknown_sites_{0}, format_errors_{0};
+    std::atomic<std::uint64_t> write_errors_{0}, open_errors_{0}, rotate_errors_{0}, internal_errors_{0};
+    std::atomic<bool> output_failed_{false};
+    mutable std::mutex error_mutex_;
+    ErrorInfo last_error_;
+    std::uint64_t last_error_callback_ns_ = 0;  // consumer only
     std::atomic<std::uint64_t> sequence_{0};
     std::atomic<std::uint64_t> record_state_{kClosingBit};
     std::uint64_t consumed_sequence_ = 0;  // consumer thread only

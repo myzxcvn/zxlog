@@ -3,6 +3,7 @@
 #include "build_id.h"
 
 #include <atomic>
+#include <cerrno>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -21,6 +22,8 @@ template <> struct LogAdapter<ChangingText> {
     }
 };
 }
+
+extern "C" void zxlog_test_fault(int mode);
 
 namespace fs = std::filesystem;
 
@@ -60,6 +63,8 @@ void flush(zxlog::Logger &logger) { require(logger.flush(true), "flush failed");
 
 void report(const std::string &name, const zxlog::Logger &logger) {
     const auto stats = logger.stats();
+    require(stats.dropped == stats.queue_full + stats.producer_limit + stats.tls_limit + stats.record_too_large,
+            "drop categories do not account for total");
     require(stats.io_errors == 0 && stats.sync_errors == 0, "logger I/O error");
     std::cout << name << ' ' << stats.accepted << ' ' << stats.dropped << ' ' << stats.rotations << '\n';
 }
@@ -166,6 +171,91 @@ void isolation(const Fixture &f) {
     report("b", *b);
     report("shared", *shared);
     global.shutdown();
+}
+
+void diagnostics(const Fixture &f) {
+    for (int mode = 1; mode <= 4; ++mode) {
+        auto options = f.options("fault" + std::to_string(mode));
+        options.flush_interval = std::chrono::milliseconds(0);
+        options.error_interval = std::chrono::hours(1);
+        options.max_file_bytes = 1100;
+        std::atomic<unsigned> callbacks{0};
+        std::atomic<bool> callback_ok{false};
+        zxlog::Logger *raw = nullptr;
+        options.error_handler = [&](const zxlog::ErrorInfo &error) {
+            ++callbacks;
+            const auto copy = raw->last_error();
+            int evaluated = 0;
+            ZX_LOG(raw, ERROR, "recursive callback {}", ++evaluated);
+            const bool refused = !raw->flush() && !raw->set_mode(zxlog::OutputMode::Text);
+            raw->shutdown(); // Reentrant lifecycle operations must not join the worker itself.
+            std::string create_error;
+            const bool no_creation = !zxlog::Logger::create(options, &create_error);
+            callback_ok.store(copy.code == error.code && evaluated == 0 && refused && no_creation);
+            throw std::runtime_error("handler exception is isolated");
+        };
+        auto logger = f.create(options);
+        raw = logger.get();
+        zxlog_test_fault(mode);
+        const int count = mode == 4 ? 8 : 1;
+        for (int i = 0; i < count; ++i)
+            ZX_LOG(logger, INFO, "fault payload {}", std::string(300, 'x'));
+        require(!logger->flush(true), "fault did not reach flush result");
+        require(logger->output_failed(), "failed output not observable");
+        auto error = logger->last_error();
+        const auto expected = mode == 3 ? zxlog::ErrorCode::Sync :
+                              mode == 4 ? zxlog::ErrorCode::Rotate : zxlog::ErrorCode::Write;
+        require(error.code == expected && error.system_error == (mode == 3 ? EIO : mode == 4 ? EACCES : ENOSPC)
+                && !error.path.empty() && !error.operation.empty() && error.steady_ns != 0,
+                "missing fault context");
+        require(callbacks.load() == 1 && callback_ok.load(), "handler rate limit/reentrancy failed");
+        ZX_LOG(logger, INFO, "after failed writer");
+        require(!logger->flush(), "failed writer became healthy without recovery");
+        require(logger->last_error().operation == error.operation && callbacks.load() == 1,
+                "original failure overwritten");
+        const auto stats = logger->stats();
+        require((mode <= 2 && stats.write_errors > 0) || (mode == 3 && stats.sync_errors > 0) ||
+                (mode == 4 && stats.rotate_errors > 0), "fault category missing");
+        zxlog_test_fault(0);
+        logger->shutdown();
+        options.error_handler = {};
+        auto recovered = f.create(options);
+        ZX_LOG(recovered, INFO, "recovered");
+        flush(*recovered);
+        require(!recovered->output_failed(), "fresh instance retained error state");
+    }
+#if ZXLOG_BUILD_MODE != 2
+    auto options = f.options("format_error");
+    options.initial_mode = zxlog::OutputMode::Text;
+    auto format = f.create(options);
+    ZX_LOG(format, INFO, "{:{}}", "bad width", -1);
+    ZX_LOG(format, INFO, "after bad format");
+    require(!format->flush(), "format error not reported");
+    require(format->stats().format_errors == 1 && !format->output_failed() &&
+            format->last_error().code == zxlog::ErrorCode::Format, "format error misclassified");
+#endif
+    auto periodic_options = f.options("periodic_fault");
+    periodic_options.flush_interval = std::chrono::milliseconds(0);
+    periodic_options.sync_interval = std::chrono::milliseconds(10);
+    auto periodic_failure = f.create(periodic_options);
+    zxlog_test_fault(3);
+    ZX_LOG(periodic_failure, INFO, "periodic sync failure");
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!periodic_failure->output_failed() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    require(periodic_failure->output_failed() && !periodic_failure->flush(),
+            "periodic sync did not reach fdatasync");
+    zxlog_test_fault(0);
+    periodic_failure->shutdown();
+    auto options_producer = f.options("producer_limit");
+    options_producer.max_producers = 1;
+    auto producer = f.create(options_producer);
+    ZX_LOG(producer, INFO, "owns producer slot");
+    std::thread extra([&] { ZX_LOG(producer, INFO, "no producer slot"); });
+    extra.join();
+    flush(*producer);
+    require(producer->stats().producer_limit == 1 && producer->stats().dropped == 1,
+            "producer exhaustion misclassified");
 }
 
 void periodic(const Fixture &f) {
@@ -471,6 +561,8 @@ int main(int argc, char **argv) {
         const std::string scenario = argv[1];
         if (scenario == "isolation")
             isolation(fixture);
+        else if (scenario == "diagnostics")
+            diagnostics(fixture);
         else if (scenario == "periodic")
             periodic(fixture);
         else if (scenario == "text_limits")

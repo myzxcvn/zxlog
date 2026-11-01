@@ -205,6 +205,8 @@ python3 tools/decode.py --dict out/Binary/zxlog.zdict \
 - 每个 logger 为各生产线程分配独立的预分配 SPSC ring；记录发布不需要共享互斥锁。实例内 `sequence` 保证日志与控制事件的顺序。线程退出后，其各个 ring 在消费完毕时可以重新注册给其它线程。
 - 每个 logger 默认 `8` 个生产者 ring，每 ring `32` 槽，每槽略高于 `1024` 字节；**每实例队列本身约占 0.26 MiB**，另有线程栈、写缓冲和文本字典内存。可缩减 `max_producers` 和 `per_thread_slots`；注册满/队列满/记录超长会丢弃，并计入该实例的 `Stats::dropped`。
 - 每线程最多同时绑定 `Logger::kMaxLoggersPerThread`（32）个活跃 logger，达到上限时向新实例写入会计入其 `dropped`。TLS 以不复用的实例 ID 区分生命周期，用弱引用管理注册；关闭实例后队列内存释放，其 TLS 槽位可复用，不必等生产线程退出。稳定调用路径不增加堆分配。
+- `stats()` 将生产端丢弃细分为 `queue_full / producer_limit / tls_limit / record_too_large`，它们的合计等于 `dropped`（并发采样可能短暂不一致）；后端另统计 `text_too_large`、格式、未知日志点、记录校验及文件操作失败。`last_error()` 返回线程安全的错误快照（类别、操作、路径、errno、单调时间），`output_failed()` 标记文件输出故障。`io_errors` 保留历史累计语义，发生错误后显式 `flush()` 会返回 false。
+- `Options::error_handler` 在后台线程调用，默认按实例每秒最多通知一次；计数和 `last_error()` 不受限频影响。回调必须及时返回、不能销毁 logger；回调中的日志不求值，flush/set_mode 返回 false，shutdown 不执行，create/initialize 拒绝创建或初始化；异常被隔离。失败 writer 保留首次文件错误，不自动重放部分写入：先停止调用者、shutdown，再创建新实例，启动恢复会保留有效记录。
 - 默认 `flush_interval=100ms` 定时刷出低流量日志，设为 0 可禁用；`flush_on_level` 可按级别刷新。`sync_interval` 和 `sync_on_level` 独立控制 `fdatasync`，默认禁用；时间间隔允许 0～24 小时。定时策略受线程调度和 I/O 延迟影响，不是硬实时保证；`flush(true)` 仍等待前序事件写入并同步。
 - 文本行（含前缀和换行）受 `max_text_bytes`（默认 64 KiB，最大 1 MiB）及 `max_file_bytes` 的较小值限制；超限整条丢弃并计入 `text_too_large`，writer 继续工作。文本渲染的输出缓冲受限，离线 C++ 解码器默认也限制单条正文为 64 KiB。
 - `Stats::accepted` 表示成功入队，**不代表已经落盘**。`flush(false)` 等待以前的事件被后台写入，`flush(true)` 进一步执行 `fdatasync`。仍然不能保证存储硬件在掉电时完成内部刷新。

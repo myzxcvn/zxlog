@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add classified loss/error counters, thread-safe last_error(), output_failed(), and rate-limited backend error callbacks with reentrancy/exception isolation. Preserve the original file failure and verify explicit shutdown/recreate recovery using injected I/O failures.
+
 - Flush pending low-volume output every 100 ms by default. Add independent flush/sync intervals and severity triggers, retaining explicit acknowledged flush barriers.
 
 - Bound rendered text with max_text_bytes (64 KiB by default) and the file quota. Count rejected text separately without poisoning the writer or blocking later records.

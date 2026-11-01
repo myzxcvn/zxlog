@@ -32,9 +32,15 @@ std::uint64_t next_instance_id() {
 
 }  // namespace
 
+thread_local bool Logger::in_error_handler_ = false;
+
 Logger::Logger() : instance_id_(next_instance_id()) {}
 
 std::unique_ptr<Logger> Logger::create(const Options &options, std::string *error) {
+    if (in_error_handler_) {
+        if (error) *error = "cannot create a logger from an error handler";
+        return nullptr;
+    }
     try {
         auto logger = std::unique_ptr<Logger>(new Logger);
         if (!logger->initialize(options, error)) {
@@ -71,6 +77,10 @@ std::uint64_t Logger::ns_steady() noexcept {
 }
 
 bool Logger::initialize(const Options &options, std::string *error) {
+    if (in_error_handler_) {
+        if (error) *error = "cannot initialize a logger from an error handler";
+        return false;
+    }
     std::lock_guard<std::mutex> life(lifecycle_mutex_);
     if (error) {
         error->clear();
@@ -101,6 +111,7 @@ bool Logger::initialize(const Options &options, std::string *error) {
         return false;
     }
     if (options.flush_interval.count() < 0 || options.sync_interval.count() < 0 ||
+        options.error_interval.count() < 0 || options.error_interval > std::chrono::hours(24) ||
         options.flush_interval > std::chrono::hours(24) || options.sync_interval > std::chrono::hours(24) ||
         options.level > Level::Off || options.flush_on_level > Level::Off || options.sync_on_level > Level::Off) {
         if (error) *error = "invalid flush interval or level";
@@ -271,6 +282,7 @@ Logger::ProducerQueue *Logger::current_producer() noexcept {
     }
 
     if (!free) {
+        tls_limit_.fetch_add(1, std::memory_order_relaxed);
         return nullptr;
     }
 
@@ -285,10 +297,12 @@ Logger::ProducerQueue *Logger::current_producer() noexcept {
         }
     }
 
+    producer_limit_.fetch_add(1, std::memory_order_relaxed);
     return nullptr;
 }
 
 bool Logger::enqueue_control(Control control) {
+    if (in_error_handler_) return false;
     std::unique_lock<std::mutex> lock(control_mutex_);
     if (!accepting_.load(std::memory_order_acquire) || closing_) {
         return false;
@@ -330,6 +344,7 @@ bool Logger::set_mode(OutputMode mode) {
 }
 
 bool Logger::flush(bool durable) {
+    if (in_error_handler_) return false;
     auto promise = std::make_shared<std::promise<bool>>();
     auto ready = promise->get_future();
     Control c;
@@ -387,13 +402,13 @@ void Logger::write_log(const Slot &slot) {
     const auto *bytes = slot.bytes.data();
     if (slot.length < kRecordHeaderSize ||
         detail::read_u32(bytes + 16) != detail::record_crc32(bytes, slot.length)) {
-        note_io_error();
+        note_error(ErrorCode::InvalidRecord, "record CRC/length validation");
         return;
     }
 #if ZXLOG_BUILD_MODE != 1
     if (active_mode_ == OutputMode::Binary) {
         if (!binary_file_->append(bytes, slot.length)) {
-            note_io_error();
+            note_writer_error(*binary_file_);
         }
 
         return;
@@ -403,7 +418,7 @@ void Logger::write_log(const Slot &slot) {
     const auto id = detail::read_u32(bytes + 4);
     const auto *entry = dictionary_->lookup(id);
     if (!entry) {
-        note_io_error();
+        note_error(ErrorCode::UnknownSite, "dictionary lookup", options_.dictionary_path);
         return;
     }
 
@@ -423,30 +438,72 @@ void Logger::write_log(const Slot &slot) {
     if (!detail::render_text(*entry, bytes + kRecordHeaderSize, slot.length - kRecordHeaderSize,
                              rendered, limit - line.size() - 1, &too_large)) {
         if (too_large) text_too_large_.fetch_add(1, std::memory_order_relaxed);
-        else note_io_error();
+        else note_error(ErrorCode::Format, "render text", options_.text_path);
         return;
     }
     line += rendered;
     line += '\n';
     if (!text_file_->append(reinterpret_cast<const std::uint8_t *>(line.data()), line.size())) {
-        note_io_error();
+        note_writer_error(*text_file_);
     }
 #endif
 }
 
 bool Logger::flush_writers(bool durable) {
     bool okay = true;
-    if (text_file_ && !text_file_->flush(durable)) {
-        note_io_error();
-        okay = false;
+    for (auto *writer : {text_file_.get(), binary_file_.get()}) {
+        if (!writer) continue;
+        try {
+            if (!writer->flush(durable)) {
+                note_writer_error(*writer);
+                okay = false;
+            }
+        } catch (...) {
+            note_error(ErrorCode::Internal, "flush exception");
+            okay = false;
+        }
     }
-
-    if (binary_file_ && !binary_file_->flush(durable)) {
-        note_io_error();
-        okay = false;
-    }
-
     return okay;
+}
+
+ErrorInfo Logger::last_error() const {
+    std::lock_guard<std::mutex> lock(error_mutex_);
+    return last_error_;
+}
+
+void Logger::note_writer_error(const detail::FileWriter &writer) noexcept {
+    output_failed_.store(true, std::memory_order_relaxed);
+    const auto &error = writer.last_error();
+    note_error(error.code, error.operation.c_str(), error.path, error.system_error);
+}
+
+void Logger::note_error(ErrorCode code, const char *operation, const std::string &path, int error) noexcept {
+    io_errors_.fetch_add(1, std::memory_order_relaxed);
+    switch (code) {
+    case ErrorCode::InvalidRecord: ++invalid_records_; break;
+    case ErrorCode::UnknownSite: ++unknown_sites_; break;
+    case ErrorCode::Format: ++format_errors_; break;
+    case ErrorCode::Open: ++open_errors_; break;
+    case ErrorCode::Write: ++write_errors_; break;
+    case ErrorCode::Rotate: ++rotate_errors_; break;
+    case ErrorCode::Sync: break; // FileWriter counts failed sync operations.
+    default: ++internal_errors_; break;
+    }
+    try {
+        ErrorInfo info{code, error, ns_steady(), operation, path};
+        {
+            std::lock_guard<std::mutex> lock(error_mutex_);
+            last_error_ = info;
+        }
+        const auto interval = static_cast<std::uint64_t>(options_.error_interval.count()) * 1000000;
+        if (options_.error_handler &&
+            (last_error_callback_ns_ == 0 || info.steady_ns - last_error_callback_ns_ >= interval)) {
+            last_error_callback_ns_ = info.steady_ns;
+            in_error_handler_ = true;
+            try { options_.error_handler(info); } catch (...) { /* User handler cannot kill the worker. */ }
+            in_error_handler_ = false;
+        }
+    } catch (...) { /* Error reporting must still work when allocation fails: counters remain. */ }
 }
 
 void Logger::consume() {
@@ -481,13 +538,11 @@ void Logger::consume() {
                         (void)flush_writers(false);
                     }
                 } catch (...) {
-                    note_io_error();
+                    note_error(ErrorCode::Internal, "write event exception");
                 }
             } else if (control.kind == ControlKind::ModeChange) {
                 // Ensure old pending bytes are not interleaved with new output mode.
-                if (!flush_writers(false)) {
-                    note_io_error();
-                }
+                (void)flush_writers(false);
 
                 active_mode_ = control.mode;
             } else {
@@ -519,6 +574,7 @@ void Logger::consume() {
 }
 
 void Logger::shutdown() {
+    if (in_error_handler_) return;
     std::lock_guard<std::mutex> life(lifecycle_mutex_);
     if (!initialized_) {
         return;
@@ -561,6 +617,19 @@ Stats Logger::stats() const noexcept {
     stats.dropped = dropped_.load(std::memory_order_relaxed);
     stats.io_errors = io_errors_.load(std::memory_order_relaxed);
     stats.text_too_large = text_too_large_.load(std::memory_order_relaxed);
+#define ZXLOG_READ_STAT(name) stats.name = name##_.load(std::memory_order_relaxed)
+    ZXLOG_READ_STAT(queue_full);
+    ZXLOG_READ_STAT(producer_limit);
+    ZXLOG_READ_STAT(tls_limit);
+    ZXLOG_READ_STAT(record_too_large);
+    ZXLOG_READ_STAT(invalid_records);
+    ZXLOG_READ_STAT(unknown_sites);
+    ZXLOG_READ_STAT(format_errors);
+    ZXLOG_READ_STAT(write_errors);
+    ZXLOG_READ_STAT(open_errors);
+    ZXLOG_READ_STAT(rotate_errors);
+    ZXLOG_READ_STAT(internal_errors);
+#undef ZXLOG_READ_STAT
     if (binary_file_) {
         stats.rotations += binary_file_->rotations();
         stats.repaired_bytes += binary_file_->repaired_bytes();
