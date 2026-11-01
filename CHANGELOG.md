@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Compose Logger from AdmissionState, AsyncRuntime, OutputBackend and Diagnostics, with state and operations owned together. Retain only runtime configuration and remove the unused wall-clock member. Preserve public API, wire formats, ordering and shutdown semantics; consumers must rebuild for the new object layout. Extend rollback and concurrent control/shutdown coverage.
+
 - Derive per-executable IDs from the source fingerprint and linked ELF, finalize a retained runtime identity section, and reject unfinalized or mismatched IDs. Validate image/dictionary hashes during deployment packaging and emit matching manifests; keep existing log/dictionary wire formats readable.
 
 - Add classified loss/error counters, thread-safe last_error(), output_failed(), and rate-limited backend error callbacks with reentrancy/exception isolation. Preserve the original file failure and verify explicit shutdown/recreate recovery using injected I/O failures.

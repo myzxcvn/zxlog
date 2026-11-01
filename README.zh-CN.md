@@ -52,6 +52,19 @@ ZX_LOG(INFO, ...)       *.cc → *.o → final ELF
 
 **生产端**始终是 `EventID + timestamp + args` 的同一二进制结构；模式只改变后台输出。二进制构建可使用 `objcopy` 删除运行镜像的 `zxlog_meta`，并且不部署字典。文本构建和动态切换构建需要设备能读取匹配 `.zdict`。
 
+`Logger` 直接持有四个内部组件，协调初始化、记录编码和关闭；每个组件同时封装自己的状态与操作：
+
+| 组件 | 状态与职责 | 并发边界 |
+|---|---|---|
+| `AdmissionState` | 实例 ID、级别、准入计数、生命周期锁 | 生产线程通过原子操作准入；初始化与关闭串行 |
+| `AsyncRuntime` | SPSC 队列、TLS 注册、序号、控制屏障、后台线程 | 生产者发布记录；单消费者按序处理日志和控制事件 |
+| `OutputBackend` | 路径占用、文件、字典、输出模式、刷新策略 | 初始化准备资源；后台线程操作输出；线程退出后关闭文件 |
+| `Diagnostics` | 分类计数、最近错误、故障标记、限频回调 | 原子计数与加锁错误快照；回调在后台线程执行 |
+
+关闭顺序为：停止准入 → 等待已准入的记录发布或退出 → 排空事件并等待后台线程退出 → 关闭文件 → 释放队列与路径占用。`accepting`、记录准入状态、后台退出标记和“曾成功初始化”分别服务不同阶段，仍保留独立语义。
+
+初始化后只保留各组件运行所需的配置，不再保存整份 `Options`；未使用的启动墙钟成员已移除，二进制文件头仍记录墙钟与单调时钟。组件按值组合，生产热路径继续使用预分配队列。内部声明位于 `include/zxlog/detail/`，供模板实现使用，不作为稳定的对外 API。现有宏、公开方法和日志协议保持兼容；对象布局已变化，使用方需重新编译。
+
 ## GN + Ninja 构建
 
 ```bash
@@ -245,13 +258,15 @@ python3 tools/decode.py --dict out/Binary/zxlog.zdict \
 - 生产镜像已去除 `zxlog_meta` 节
 - 两种宏形式及六级别、对象/裸指针/智能指针、临时句柄、空句柄及参数惰性求值
 - 多实例交替写入、四线程隔离、单实例关闭与其它实例继续写入
+- 关闭与并发 flush、模式切换、诊断快照交叠，已接受的控制屏障正常完成
 - 反复创建关闭、TLS 32 实例容量与回收、生产线程退出回收
 - 重复路径、归档命名冲突、父目录别名、活动文件链接别名、创建失败后的资源释放
+- 输出资源就绪后回调复制抛异常，验证资源释放和全局实例重试
 - 多实例独立轮换、RUNTIME 独立模式切换，以及两套离线解码器一致性
 
 2026-11-01 本地验证使用 GCC 12.3.0、GN 2318、Ninja 1.10.1。`BINARY/TEXT/RUNTIME` 的 `gn gen`、`gn check` 和完整 `ninja -C out/<Mode> check` 均通过；`BINARY` 的 `zxlog_optimize=false` 构建也通过。上述集成场景按各模式适用分支执行，部署镜像额外检查正常日志和被级别过滤日志的格式字符串均已移除。上线前还应在实际目标工具链、文件系统、编译优化选项（特别是 LTO）上做构建、性能和断电测试。
 
-本轮可靠性修复使用 Clang 21.1.5 `-O1 -g` 验证：RUNTIME 的 AddressSanitizer/UndefinedBehaviorSanitizer 和 ThreadSanitizer 均通过单元及完整多实例场景，包含 I/O 故障注入、镜像标识固化、元数据剥离和两套解码器核对，未报告检测器错误。GCC 12.3.0 `-O2 -flto` 的 RUNTIME 多实例流程也通过，运行时标识未被优化为占位值。
+本轮组件拆分后使用 Clang 21.1.5 `-O1 -g` 验证：RUNTIME 的 AddressSanitizer/UndefinedBehaviorSanitizer 和 ThreadSanitizer 均通过单元及完整多实例场景，包含初始化异常回滚、并发控制与关闭、I/O 故障注入、镜像标识固化、元数据剥离和两套解码器核对，未报告检测器错误。GCC 12.3.0 `-O2 -flto` 的 RUNTIME 多实例流程也通过，运行时标识未被优化为占位值。
 
 历史手工验证（多实例改造前）：GCC 12.3.0 的 `-O2 -flto` BINARY 示例通过完整集成测试；Clang 21.1.5 的 `-O1 -g -fsanitize=address,undefined` 单元测试与 BINARY 示例也通过，未报告 sanitizer 错误。两者均覆盖字典提取和部署镜像剥离，C++ 离线解码器复用常规 GN 构建产物。
 
@@ -259,7 +274,12 @@ python3 tools/decode.py --dict out/Binary/zxlog.zdict \
 
 ```text
 include/zxlog/             对外日志 API、codec、CRC、ELF 元数据和协议
-src/logger.cc             多实例生命周期、SPSC 注册、实例内排序、后台线程
+include/zxlog/detail/     内部组件声明与生产端内联操作
+src/logger.cc            初始化、关闭及公开 API 协调
+src/admission_state.cc   准入与生命周期状态
+src/async_runtime.cc     SPSC 注册、实例内排序、控制屏障、后台线程
+src/output_backend.cc    文件与字典资源、输出模式、格式化与刷新
+src/diagnostics.cc       分类统计、错误快照、回调通知
 src/path_lease.{h,cc}     进程内输出路径及归档命名空间占用检查
 src/file_writer.{h,cc}    批量写入、CRC 文件恢复、轮转、fdatasync
 src/text_format.{h,cc}    构建字典加载、{fmt} 文本恢复

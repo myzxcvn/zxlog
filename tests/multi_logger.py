@@ -133,6 +133,7 @@ def main(a):
     assert records(roots['close'], 'survivor') == [('INFO', f'survivor {i}') for i in range(200)]
     assert records(roots['conflicts'], 'live') == [('INFO', 'live'), ('INFO', 'replacement')]
     assert records(roots['conflicts'], 'retry') == [('INFO', 'retry succeeds')]
+    assert records(roots['conflicts'], 'copy_failure') == [('INFO', 'after copy failure')]
     for name, offset in (('a', 0), ('b', 100)):
         assert records(roots['thread_churn'], name) == [('INFO', f'custom {offset + i}') for i in range(40)]
     root = roots['rotation']

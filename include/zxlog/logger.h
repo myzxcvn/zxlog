@@ -2,103 +2,41 @@
 
 #include "zxlog/site.h"
 #include "zxlog/crc32.h"
-#include "zxlog/error.h"
-#include "zxlog/identity.h"
+#include "zxlog/options.h"
+#include "zxlog/stats.h"
+#include "zxlog/detail/admission_state.h"
+#include "zxlog/detail/async_runtime.h"
+#include "zxlog/detail/diagnostics.h"
+#include "zxlog/detail/output_backend.h"
 #include <fmt/format.h>
-#include <array>
-#include <atomic>
 #include <chrono>
-#include <condition_variable>
-#include <cstddef>
-#include <cstdint>
-#include <deque>
-#include <future>
-#include <functional>
 #include <memory>
-#include <mutex>
-#include <string>
-#include <thread>
 #include <tuple>
-#include <vector>
-
-#ifndef ZXLOG_BUILD_MODE
-#define ZXLOG_BUILD_MODE 3
-#endif
-#if ZXLOG_BUILD_MODE < 1 || ZXLOG_BUILD_MODE > 3
-#error "ZXLOG_BUILD_MODE must be 1=TEXT, 2=BINARY, or 3=RUNTIME"
-#endif
 
 namespace zxlog {
 namespace detail {
-class Dictionary;
-class FileWriter;
-class PathLease;
-
 template <typename... Args, typename Format>
 void validate_format(Format format) {
-    // FMT_STRING enables compile-time validation with C++17.
     fmt::format_string<Args...> checked = format;
     (void)checked;
 }
-
 }  // namespace detail
-
-struct Options {
-    OutputMode initial_mode = OutputMode::Binary;
-    Level level = Level::Trace;
-    unsigned max_producers = 8;         // retired queues are reusable after draining
-    std::size_t per_thread_slots = 32;  // SPSC capacity per producer, allocated at init
-    std::string binary_path = "robot.blog";
-    std::string text_path = "robot.log";
-    std::string dictionary_path = "robot.zdict";
-    std::array<std::uint8_t, 16> build_id = linked_build_id();
-    std::uint64_t max_file_bytes = 1u << 20;
-    unsigned max_files = 4;  // active + up to 3 rotated archives
-    std::size_t io_batch_bytes = 16384;
-    std::size_t max_text_bytes = 64u << 10;  // complete line, including prefix/newline
-    std::chrono::milliseconds flush_interval{100};  // 0 disables periodic write
-    std::chrono::milliseconds sync_interval{0};     // periodic fdatasync, opt-in
-    Level flush_on_level = Level::Off;
-    Level sync_on_level = Level::Off;
-    std::function<void(const ErrorInfo &)> error_handler;  // backend thread; must return promptly
-    std::chrono::milliseconds error_interval{1000};      // rate limit per instance
-    unsigned sync_every_records = 0;  // 0 = only explicit flush(true) / rotation sync
-    bool repair_on_start = true;
-    bool sync_on_rotate = true;
-};
-
-struct Stats {
-    std::uint64_t accepted = 0;
-    std::uint64_t dropped = 0;
-    std::uint64_t io_errors = 0;
-    std::uint64_t rotations = 0;
-    std::uint64_t repaired_bytes = 0;
-    std::uint64_t sync_errors = 0;
-    std::uint64_t text_too_large = 0;  // accepted events rejected by text rendering
-    std::uint64_t queue_full = 0, producer_limit = 0, tls_limit = 0, record_too_large = 0;
-    std::uint64_t invalid_records = 0, unknown_sites = 0, format_errors = 0;
-    std::uint64_t write_errors = 0, open_errors = 0, rotate_errors = 0, internal_errors = 0;
-};
 
 class Logger {
 public:
     static Logger &instance();
     static std::unique_ptr<Logger> create(const Options &options, std::string *error = nullptr);
     // Per-thread registrations are bounded; closed instances do not occupy slots.
-    static constexpr std::size_t kMaxLoggersPerThread = 32;
+    static constexpr std::size_t kMaxLoggersPerThread = detail::AsyncRuntime::kMaxLoggersPerThread;
     ~Logger();
     Logger(const Logger &) = delete;
     Logger &operator=(const Logger &) = delete;
 
     bool initialize(const Options &options, std::string *error = nullptr);
     bool enabled(Level level) const noexcept {
-        return !in_error_handler_ && accepting_.load(std::memory_order_acquire) &&
-               static_cast<unsigned>(level) >=
-                   static_cast<unsigned>(minimum_.load(std::memory_order_relaxed)) &&
-               level != Level::Off;
+        return !detail::Diagnostics::in_error_handler() && admission_.enabled(level);
     }
-
-    void set_level(Level level) noexcept { minimum_.store(level, std::memory_order_relaxed); }
+    void set_level(Level level) noexcept { admission_.set_level(level); }
     // RUNTIME only: enqueued control event orders output transition with events.
     bool set_mode(OutputMode mode);
     // Flush buffered output. durable=true requests fdatasync before acknowledging.
@@ -107,39 +45,28 @@ public:
     void shutdown();
     Stats stats() const noexcept;
     ErrorInfo last_error() const;
-    bool output_failed() const noexcept { return output_failed_.load(std::memory_order_relaxed); }
+    bool output_failed() const noexcept { return diagnostics_.output_failed(); }
 
     template <typename... Args>
     void record(Level level, std::uint32_t site_id, Args &&...args) noexcept {
         static_assert(((detail::type_of<Args>() != Type::Invalid) && ...),
                       "zxlog: argument cannot be serialized");
-        if (in_error_handler_ || !accepting_.load(std::memory_order_acquire) || !enter_record()) {
+        if (detail::Diagnostics::in_error_handler() || !admission_.enter_record()) {
             return;
         }
 
-        const auto finish = [this]() noexcept { record_state_.fetch_sub(1, std::memory_order_release); };
-        ProducerQueue *q = current_producer();
-        if (!q) {
-            dropped_.fetch_add(1, std::memory_order_relaxed);
+        const auto finish = [this]() noexcept { admission_.leave_record(); };
+        const auto reservation = runtime_.reserve(admission_.instance_id(), diagnostics_);
+        if (!reservation) {
             finish();
             return;
         }
-
-        const std::uint64_t tail = q->write.load(std::memory_order_relaxed);
-        if (tail - q->read.load(std::memory_order_acquire) >= q->slots.size()) {
-            queue_full_.fetch_add(1, std::memory_order_relaxed);
-            dropped_.fetch_add(1, std::memory_order_relaxed);
-            finish();
-            return;
-        }
-
-        Slot &slot = q->slots[tail % q->slots.size()];
+        auto &slot = reservation.record();
         std::uint8_t *data = slot.bytes.data();
         std::uint8_t *p = data + kRecordHeaderSize;
         if (!(detail::write_value(p, data + slot.bytes.size(), args) && ...)) {
-            record_too_large_.fetch_add(1, std::memory_order_relaxed);
+            diagnostics_.drop(detail::DropReason::RecordTooLarge);
             // An incomplete slot is never published and consumes no sequence.
-            dropped_.fetch_add(1, std::memory_order_relaxed);
             finish();
             return;
         }
@@ -154,100 +81,19 @@ public:
         detail::write_u64(data + 8, stamp);
         detail::write_u32(data + 16, detail::record_crc32(data, bytes));
         // Linearization point for cross-producer ordering and mode barriers.
-        slot.sequence = sequence_.fetch_add(1, std::memory_order_acq_rel);
-        q->write.store(tail + 1, std::memory_order_release);
-        accepted_.fetch_add(1, std::memory_order_relaxed);
+        runtime_.publish(reservation);
+        diagnostics_.accepted();
         finish();
-        wake_cv_.notify_one();
+        runtime_.wake();
     }
 
 private:
     Logger();
-    static constexpr std::uint64_t kClosingBit = std::uint64_t{1} << 63;
-    // Admission and shutdown share one atomic modification order: a caller is
-    // either counted before closing or rejected, even on weakly ordered CPUs.
-    bool enter_record() noexcept {
-        auto state = record_state_.load(std::memory_order_relaxed);
-        while (!(state & kClosingBit)) {
-            if (record_state_.compare_exchange_weak(state, state + 1, std::memory_order_acquire,
-                                                    std::memory_order_relaxed)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    struct Slot {
-        std::array<std::uint8_t, kMaxRecordSize> bytes{};
-        std::uint64_t sequence = 0;
-        std::uint32_t length = 0;
-        Level level = Level::Info;  // backend policy, not part of the wire record
-    };
-
-    struct ProducerQueue {
-        explicit ProducerQueue(std::size_t count) : slots(count) {}
-        std::vector<Slot> slots;
-        alignas(64) std::atomic<std::uint64_t> write{0};
-        alignas(64) std::atomic<std::uint64_t> read{0};
-        std::atomic<unsigned> state{0};  // 0 free, 1 active, 2 retiring
-    };
-
-    enum class ControlKind : std::uint8_t { ModeChange, Barrier };
-    struct Control {
-        std::uint64_t sequence = 0;
-        ControlKind kind = ControlKind::Barrier;
-        OutputMode mode = OutputMode::Binary;
-        bool durable = false;
-        std::shared_ptr<std::promise<bool>> ack;
-    };
-
-    ProducerQueue *current_producer() noexcept;
-    bool enqueue_control(Control control);
-    bool pop_event(Slot &scratch, Control &ctrl, bool &is_control);
-    void consume();
-    void write_log(const Slot &slot);
-    bool flush_writers(bool durable);
-    static std::uint64_t ns_wall() noexcept;
-    static std::uint64_t ns_steady() noexcept;
-    void note_error(ErrorCode code, const char *operation, const std::string &path = {}, int error = 0) noexcept;
-    void note_writer_error(const detail::FileWriter &writer) noexcept;
-    static thread_local bool in_error_handler_;
-
-    const std::uint64_t instance_id_;
-    std::atomic<bool> accepting_{false};
-    std::atomic<Level> minimum_{Level::Off};
-    std::atomic<std::uint64_t> accepted_{0}, dropped_{0}, io_errors_{0};
-    std::atomic<std::uint64_t> text_too_large_{0};
-    std::atomic<std::uint64_t> queue_full_{0}, producer_limit_{0}, tls_limit_{0}, record_too_large_{0};
-    std::atomic<std::uint64_t> invalid_records_{0}, unknown_sites_{0}, format_errors_{0};
-    std::atomic<std::uint64_t> write_errors_{0}, open_errors_{0}, rotate_errors_{0}, internal_errors_{0};
-    std::atomic<bool> output_failed_{false};
-    mutable std::mutex error_mutex_;
-    ErrorInfo last_error_;
-    std::uint64_t last_error_callback_ns_ = 0;  // consumer only
-    std::atomic<std::uint64_t> sequence_{0};
-    std::atomic<std::uint64_t> record_state_{kClosingBit};
-    std::uint64_t consumed_sequence_ = 0;  // consumer thread only
-    std::mutex lifecycle_mutex_;
-    std::mutex control_mutex_;
-    std::deque<Control> controls_;
-    std::condition_variable control_space_cv_;
-    std::mutex wake_mutex_;
-    std::condition_variable wake_cv_;
-    std::vector<std::shared_ptr<ProducerQueue>> queues_;
-    std::atomic<bool> closing_{false};
-    bool initialized_ = false;
-    OutputMode active_mode_ = OutputMode::Binary;
-    Options options_;
-    std::unique_ptr<detail::PathLease> path_lease_;
-    std::thread worker_;
-    std::unique_ptr<detail::FileWriter> binary_file_;
-    std::unique_ptr<detail::FileWriter> text_file_;
-#if ZXLOG_BUILD_MODE != 2
-    std::unique_ptr<detail::Dictionary> dictionary_;
-#endif
-    std::uint64_t start_wall_ns_ = 0, start_steady_ns_ = 0;
+    // shutdown() joins the runtime before these components are destroyed.
+    detail::AdmissionState admission_;
+    detail::Diagnostics diagnostics_;
+    detail::OutputBackend output_;
+    detail::AsyncRuntime runtime_;
 };
 
 namespace detail {

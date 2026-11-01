@@ -30,7 +30,16 @@ config("metadata_link") {
 }
 
 static_library("zxlog") {
-  sources = [ "src/logger.cc", "src/file_writer.cc", "src/path_lease.cc", "src/identity.cc" ]
+  sources = [
+    "src/logger.cc",
+    "src/admission_state.cc",
+    "src/async_runtime.cc",
+    "src/diagnostics.cc",
+    "src/output_backend.cc",
+    "src/file_writer.cc",
+    "src/path_lease.cc",
+    "src/identity.cc",
+  ]
   if (zxlog_mode != "BINARY") {
     sources += [ "src/text_format.cc" ]
   }
@@ -49,6 +58,14 @@ _build_id_sources = [
   "include/zxlog/codec.h",
   "include/zxlog/crc32.h",
   "include/zxlog/logger.h",
+  "include/zxlog/config.h",
+  "include/zxlog/options.h",
+  "include/zxlog/stats.h",
+  "include/zxlog/detail/admission_state.h",
+  "include/zxlog/detail/async_runtime.h",
+  "include/zxlog/detail/diagnostics.h",
+  "include/zxlog/detail/log_record.h",
+  "include/zxlog/detail/output_backend.h",
   "include/zxlog/error.h",
   "include/zxlog/identity.h",
   "src/identity.cc",
@@ -59,6 +76,10 @@ _build_id_sources = [
   "include/zxlog/site.h",
   "include/zxlog/zxlog.h",
   "src/logger.cc",
+  "src/admission_state.cc",
+  "src/async_runtime.cc",
+  "src/diagnostics.cc",
+  "src/output_backend.cc",
   "src/file_writer.cc",
   "src/file_writer.h",
   "src/path_lease.cc",

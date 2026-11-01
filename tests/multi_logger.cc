@@ -428,12 +428,32 @@ void concurrent_close(const Fixture &f) {
                 flush(*b);
         }
     });
+    std::atomic<unsigned> controls_started{0};
+    std::vector<std::thread> controllers;
+    for (unsigned i = 0; i < 4; ++i) {
+        controllers.emplace_back([&] {
+            flush(*a);
+            controls_started.fetch_add(1, std::memory_order_release);
+            while (a->flush()) {
+#if ZXLOG_BUILD_MODE == 3
+                (void)a->set_mode(zxlog::OutputMode::Text);
+                (void)a->set_mode(zxlog::OutputMode::Binary);
+#endif
+                require(a->stats().io_errors == 0 && a->last_error().code == zxlog::ErrorCode::None,
+                        "concurrent controls reported an error");
+            }
+        });
+    }
     while (!started.load(std::memory_order_acquire))
+        std::this_thread::yield();
+    while (controls_started.load(std::memory_order_acquire) != controllers.size())
         std::this_thread::yield();
     a->shutdown();
     stop.store(true, std::memory_order_release);
     producer.join();
     survivor.join();
+    for (auto &controller : controllers) controller.join();
+    require(!a->flush() && !a->set_mode(zxlog::OutputMode::Text), "closed logger accepted a control");
     flush(*b);
     require(b->stats().accepted == 200 && b->stats().dropped == 0, "closing another logger disrupted writer");
     report("closing", *a);
@@ -470,6 +490,27 @@ void conflicts(const Fixture &f) {
     int side_effect = 0;
     ZX_LOG(INFO, "filtered {}", ++side_effect);
     require(side_effect == 0, "failed initialization published logger");
+    // Exercise rollback after output resources exist but before the worker starts.
+    struct ThrowingHandler {
+        bool *fail;
+        explicit ThrowingHandler(bool *value) : fail(value) {}
+        ThrowingHandler(const ThrowingHandler &other) : fail(other.fail) {
+            if (*fail) throw std::runtime_error("injected handler copy failure");
+        }
+        void operator()(const zxlog::ErrorInfo &) const {}
+    };
+    bool fail_copy = false;
+    auto failed_copy = f.options("copy_failure");
+    failed_copy.error_handler = ThrowingHandler(&fail_copy);
+    fail_copy = true;
+    require(!global.initialize(failed_copy, &error) && error == "injected handler copy failure",
+            "handler copy failure was not rolled back");
+    require(!global.enabled(zxlog::Level::Info), "exception published logger");
+    fail_copy = false;
+    auto after_copy_failure = f.create(failed_copy); // Identical paths must be released.
+    ZX_LOG(after_copy_failure, INFO, "after copy failure");
+    flush(*after_copy_failure);
+    report("copy_failure", *after_copy_failure);
     require(global.initialize(options, &error), error);
     ZX_LOG(INFO, "live");
     flush(global);
