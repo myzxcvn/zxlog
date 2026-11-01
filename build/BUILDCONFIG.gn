@@ -1,0 +1,6 @@
+# Minimal, standalone Linux/ELF GN build configuration.
+declare_args() {
+  zxlog_mode = "BINARY"   # TEXT, BINARY, or RUNTIME
+  zxlog_optimize = true
+}
+set_default_toolchain("//build/toolchain:default")

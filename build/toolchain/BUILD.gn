@@ -1,0 +1,34 @@
+toolchain("default") {
+  tool("cc") {
+    depfile = "{{output}}.d"
+    command = "gcc -MMD -MF {{output}}.d {{defines}} {{include_dirs}} {{cflags}} {{cflags_c}} -c {{source}} -o {{output}}"
+    depsformat = "gcc"
+    outputs = [ "{{source_out_dir}}/{{target_output_name}}.{{source_name_part}}.o" ]
+    description = "CC {{source}}"
+  }
+  tool("cxx") {
+    depfile = "{{output}}.d"
+    command = "g++ -MMD -MF {{output}}.d {{defines}} {{include_dirs}} {{cflags}} {{cflags_cc}} -c {{source}} -o {{output}}"
+    depsformat = "gcc"
+    outputs = [ "{{source_out_dir}}/{{target_output_name}}.{{source_name_part}}.o" ]
+    description = "CXX {{source}}"
+  }
+  tool("alink") {
+    command = "rm -f {{output}} && ar rcs {{output}} {{inputs}}"
+    outputs = [ "{{target_out_dir}}/lib{{target_output_name}}.a" ]
+    description = "AR {{output}}"
+  }
+  tool("link") {
+    command = "g++ {{ldflags}} -o {{output}} {{inputs}} {{libs}}"
+    outputs = [ "{{root_out_dir}}/{{target_output_name}}" ]
+    description = "LINK {{output}}"
+  }
+  tool("stamp") {
+    command = "touch {{output}}"
+    description = "STAMP {{output}}"
+  }
+  tool("copy") {
+    command = "cp -f {{source}} {{output}}"
+    description = "COPY {{output}}"
+  }
+}

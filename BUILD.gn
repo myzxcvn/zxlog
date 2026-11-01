@@ -1,0 +1,153 @@
+# zxlog v0.4: C++17/Linux ELF/GCC, bundled MIT-licensed {fmt} 12.1 headers.
+assert(zxlog_mode == "TEXT" || zxlog_mode == "BINARY" || zxlog_mode == "RUNTIME",
+       "zxlog_mode must be TEXT, BINARY, or RUNTIME")
+
+_mode_value = 3
+if (zxlog_mode == "TEXT") {
+  _mode_value = 1
+} else if (zxlog_mode == "BINARY") {
+  _mode_value = 2
+}
+
+config("common") {
+  include_dirs = [ "include", "third_party/fmt/include" ]
+  defines = [ "ZXLOG_BUILD_MODE=$_mode_value" ]
+  cflags_cc = [
+    "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pthread",
+    "-ffunction-sections", "-fdata-sections",
+  ]
+  ldflags = [ "-pthread", "-Wl,--gc-sections" ]
+  if (zxlog_optimize) {
+    cflags_cc += [ "-O2" ]
+  } else {
+    cflags_cc += [ "-O0", "-g" ]
+  }
+}
+
+static_library("zxlog") {
+  sources = [ "src/logger.cc", "src/file_writer.cc" ]
+  if (zxlog_mode != "BINARY") {
+    sources += [ "src/text_format.cc" ]
+  }
+  public_configs = [ ":common" ]
+  include_dirs = [ "src" ]
+}
+
+# Inputs are intentionally explicit: any LogSite-changing file or build option
+# must participate in the hash. Apps consuming zxlog supply their own source list.
+_build_id_sources = [
+  "BUILD.gn",
+  ".gn",
+  "build/BUILDCONFIG.gn",
+  "build/toolchain/BUILD.gn",
+  "include/zxlog/codec.h",
+  "include/zxlog/crc32.h",
+  "include/zxlog/logger.h",
+  "include/zxlog/protocol.h",
+  "include/zxlog/site.h",
+  "include/zxlog/zxlog.h",
+  "src/logger.cc",
+  "src/file_writer.cc",
+  "src/file_writer.h",
+  "src/text_format.h",
+  "third_party/fmt/include/fmt/base.h",
+  "third_party/fmt/include/fmt/format.h",
+  "third_party/fmt/include/fmt/format-inl.h",
+  "third_party/fmt/include/fmt/args.h",
+  "src/text_format.cc",
+  "examples/basic.cc",
+  "tests/unit.cc",
+  "tools/decode.cc",
+]
+
+action("generate_build_id") {
+  script = "//tools/build_id.py"
+  inputs = _build_id_sources
+  outputs = [
+    "$root_gen_dir/build_id.h",
+    "$root_gen_dir/build_id.txt",
+  ]
+  args = [
+    "--header", rebase_path(outputs[0], root_build_dir),
+    "--id-file", rebase_path(outputs[1], root_build_dir),
+    "--mode", zxlog_mode,
+  ] + rebase_path(inputs, root_build_dir)
+}
+
+executable("zxlog_demo_raw") {
+  sources = [ "examples/basic.cc" ]
+  deps = [ ":zxlog", ":generate_build_id" ]
+  include_dirs = [ "$root_gen_dir" ]
+}
+
+# Extract the dictionary from the linked ELF (not from runtime registration).
+action("zxlog_dictionary") {
+  script = "//tools/extract_dictionary.py"
+  deps = [ ":zxlog_demo_raw", ":generate_build_id" ]
+  inputs = [
+    "$root_out_dir/zxlog_demo_raw",
+    "$root_gen_dir/build_id.txt",
+  ]
+  outputs = [
+    "$root_out_dir/zxlog.zdict",
+    "$root_out_dir/zxlog_dictionary.json",
+  ]
+  args = [
+    "--elf", rebase_path(inputs[0], root_build_dir),
+    "--build-id-file", rebase_path(inputs[1], root_build_dir),
+    "--output", rebase_path(outputs[0], root_build_dir),
+    "--json", rebase_path(outputs[1], root_build_dir),
+  ]
+}
+
+# The deployable runtime image excludes the zxlog_meta section. The build-time
+# dictionary remains alongside build artifacts for recovering binary logs.
+action("prepare_runtime_image") {
+  script = "//tools/strip_metadata.py"
+  deps = [ ":zxlog_dictionary", ":zxlog_demo_raw" ]
+  inputs = [ "$root_out_dir/zxlog_demo_raw" ]
+  outputs = [ "$root_out_dir/zxlog_demo" ]
+  args = [
+    "--input", rebase_path(inputs[0], root_build_dir),
+    "--output", rebase_path(outputs[0], root_build_dir),
+  ]
+}
+
+# Host offline decoder always has text formatting capability, including in a
+# BINARY-only build. Not linked to the device binary or zxlog library.
+executable("zxlog_decode") {
+  sources = [ "tools/decode.cc", "src/text_format.cc" ]
+  configs = [ ":common" ]
+  include_dirs = [ "src" ]
+}
+
+executable("zxlog_unit") {
+  sources = [ "tests/unit.cc" ]
+  configs = [ ":common" ]
+}
+
+group("zxlog_all") {
+  deps = [ ":prepare_runtime_image", ":zxlog_unit", ":zxlog_decode" ]
+}
+
+# ninja -C out/Release check: end-to-end test on the build products.
+action("check") {
+  script = "//tests/integration.py"
+  deps = [ ":prepare_runtime_image", ":zxlog_dictionary", ":zxlog_unit", ":zxlog_decode" ]
+  inputs = [
+    "$root_out_dir/zxlog_demo",
+    "$root_out_dir/zxlog_unit",
+    "$root_out_dir/zxlog.zdict",
+    "$root_out_dir/zxlog_decode",
+  ]
+  outputs = [ "$root_out_dir/check.ok" ]
+  args = [
+    "--demo", rebase_path(inputs[0], root_build_dir),
+    "--unit", rebase_path(inputs[1], root_build_dir),
+    "--dict", rebase_path(inputs[2], root_build_dir),
+    "--mode", zxlog_mode,
+    "--work", rebase_path("$root_out_dir/test-results", root_build_dir),
+    "--stamp", rebase_path(outputs[0], root_build_dir),
+    "--cpp-decoder", rebase_path(inputs[3], root_build_dir),
+  ]
+}
