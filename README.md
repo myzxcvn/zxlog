@@ -1,8 +1,10 @@
 # zxlog v0.4.0
 
-A C++17 structured event logger for Linux/ELF with a uniform `LOG_INFO("{}", arg)` front-end, build-time LogSite dictionaries, bounded per-thread SPSC rings, and selectable TEXT, BINARY or RUNTIME backends. Binary records use a CRC32-protected v2 wire protocol. Supports batched file output, quotas/rotation, `fdatasync`, startup tail repair, and offline recovery using Python or a matching C++ {fmt}-based decoder. The text backend uses MIT-licensed {fmt} 12.1.0 headers bundled in `third_party/fmt`.
+A C++17 structured event logger for Linux/ELF with a uniform `ZX_LOG(INFO, "{}", arg)` front-end, build-time LogSite dictionaries, bounded per-thread SPSC rings, and selectable TEXT, BINARY or RUNTIME backends. Binary records use a CRC32-protected v2 wire protocol. Supports batched file output, quotas/rotation, `fdatasync`, startup tail repair, and offline recovery using Python or a matching C++ {fmt}-based decoder. The text backend uses MIT-licensed {fmt} 12.1.0 headers bundled in `third_party/fmt`.
 
 See **[README.zh-CN.md](README.zh-CN.md)** for complete architecture, usage, GN/Ninja build instructions, recovery tools, deployment constraints, and limitations.
+
+Use `ZX_LOG(level, "format", args...)` with the uppercase token `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, or `CRITICAL`. Calls without arguments, such as `ZX_LOG(INFO, "Ready")`, are supported. Filtered calls do not evaluate their arguments. The former `LOG_*` and `ZXLOG_*` per-level macros and `ZXLOG_NO_SHORT_MACROS` switch have been removed; runtime level configuration still uses `zxlog::Level`.
 
 ```bash
 gn gen out/Binary --args='zxlog_mode="BINARY"'

@@ -242,17 +242,12 @@ private:
         }                                                                                                \
     } while (false)
 
-#define ZXLOG_TRACE(...) ZXLOG_DETAIL(::zxlog::Level::Trace, __VA_ARGS__)
-#define ZXLOG_DEBUG(...) ZXLOG_DETAIL(::zxlog::Level::Debug, __VA_ARGS__)
-#define ZXLOG_INFO(...) ZXLOG_DETAIL(::zxlog::Level::Info, __VA_ARGS__)
-#define ZXLOG_WARN(...) ZXLOG_DETAIL(::zxlog::Level::Warn, __VA_ARGS__)
-#define ZXLOG_ERROR(...) ZXLOG_DETAIL(::zxlog::Level::Error, __VA_ARGS__)
-#define ZXLOG_CRITICAL(...) ZXLOG_DETAIL(::zxlog::Level::Critical, __VA_ARGS__)
-#ifndef ZXLOG_NO_SHORT_MACROS
-#define LOG_TRACE(...) ZXLOG_TRACE(__VA_ARGS__)
-#define LOG_DEBUG(...) ZXLOG_DEBUG(__VA_ARGS__)
-#define LOG_INFO(...) ZXLOG_INFO(__VA_ARGS__)
-#define LOG_WARN(...) ZXLOG_WARN(__VA_ARGS__)
-#define LOG_ERROR(...) ZXLOG_ERROR(__VA_ARGS__)
-#define LOG_CRITICAL(...) ZXLOG_CRITICAL(__VA_ARGS__)
-#endif
+#define ZXLOG_DETAIL_LEVEL_TRACE ::zxlog::Level::Trace
+#define ZXLOG_DETAIL_LEVEL_DEBUG ::zxlog::Level::Debug
+#define ZXLOG_DETAIL_LEVEL_INFO ::zxlog::Level::Info
+#define ZXLOG_DETAIL_LEVEL_WARN ::zxlog::Level::Warn
+#define ZXLOG_DETAIL_LEVEL_ERROR ::zxlog::Level::Error
+#define ZXLOG_DETAIL_LEVEL_CRITICAL ::zxlog::Level::Critical
+
+// level_ is one of TRACE, DEBUG, INFO, WARN, ERROR or CRITICAL.
+#define ZX_LOG(level_, ...) ZXLOG_DETAIL(ZXLOG_DETAIL_LEVEL_##level_, __VA_ARGS__)

@@ -216,7 +216,7 @@ def do_test(a):
         'deployable image still contains a filtered LogSite format string'
 
     # A C++17 fmt error is a compile-time failure, not deferred to a log event.
-    invalid = '#include "zxlog/zxlog.h"\nvoid f(){ LOG_INFO("{:x}", 1.5); }\n'
+    invalid = '#include "zxlog/zxlog.h"\nvoid f(){ ZX_LOG(INFO, "{:x}", 1.5); }\n'
     bad = subprocess.run(['g++', '-std=c++17', '-fsyntax-only',
                          '-I' + str(ROOT / 'include'),
                          '-I' + str(ROOT / 'third_party/fmt/include'),

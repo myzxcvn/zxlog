@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Unify logging calls as `ZX_LOG(level, ...)`, using `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, or `CRITICAL`. Remove the per-level `LOG_*` / `ZXLOG_*` macros and `ZXLOG_NO_SHORT_MACROS` switch. Preserve argument filtering, C++17 compile-time format checks, and build-time LogSite metadata extraction.
+
 ## v0.4.0 (2026-11-01)
 
 - Preserve `LOG_*` API and C++17 standard; support TEXT/BINARY/RUNTIME backend policies.

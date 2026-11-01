@@ -1,6 +1,6 @@
 # zxlog v0.4.0 — C++17 结构化日志框架
 
-**设计目标**：业务只使用一个 `LOG_INFO("...{}", arg)` 宏，所有生产线程只序列化类型化参数，单后台线程根据构建/运行模式输出文本或紧凑二进制。静态格式字符串、LogID、参数类型、源码位置在 **链接后从 ELF 提取为字典**；没有开机 LogSite 注册。
+**设计目标**：业务只使用一个 `ZX_LOG(INFO, "...{}", arg)` 宏，所有生产线程只序列化类型化参数，单后台线程根据构建/运行模式输出文本或紧凑二进制。静态格式字符串、LogID、参数类型、源码位置在 **链接后从 ELF 提取为字典**；没有开机 LogSite 注册。
 
 > 平台：Linux/ELF + GCC/Clang，C++17，POSIX。2026-11-01 使用 GCC 12.3.0、GN 2318、Ninja 1.10.1 验证：三种模式的 `gn gen`、`gn check` 和完整 `check` 通过，包含 19 个日志点的字典提取、集成测试及部署镜像元数据剥离。需要 `python3`、`objcopy`、`gn` 和 `ninja` 执行正式 GN 流程。
 
@@ -8,7 +8,7 @@
 
 | 能力 | 状态 / 实现 |
 | --- | --- |
-| 统一日志宏，级别过滤时参数不求值 | ✅ `LOG_TRACE / DEBUG / INFO / WARN / ERROR / CRITICAL` |
+| 统一日志宏，级别过滤时参数不求值 | ✅ `ZX_LOG(level, ...)`，级别为 `TRACE / DEBUG / INFO / WARN / ERROR / CRITICAL` |
 | TEXT / BINARY / RUNTIME 三种构建模式 | ✅ 全部走同一条二进制事件序列化路径 |
 | 编译期格式校验 | ✅ C++17 `{fmt}` `FMT_STRING`（内置 MIT-licensed fmt 12.1.0 头文件） |
 | 类型化参数 / 自定义类型 | ✅ 整数、浮点、布尔、字符、枚举、字符串，`LogAdapter<T>` 单标量适配 |
@@ -28,7 +28,7 @@
 
 ```text
 业务线程 N              构建期
-LOG_INFO(...)           *.cc → *.o → final ELF
+ZX_LOG(INFO, ...)       *.cc → *.o → final ELF
    │                                          │
    ├── 级别过滤                              └── zxlog_meta → zxlog.zdict / JSON
    ├── EventID + 类型化参数编码                        │
@@ -73,6 +73,12 @@ GN 的 `zxlog` 目标会通过公共配置将 `build/zxlog_meta.ld` 传递给依
 
 ## 快速使用
 
+统一使用 `ZX_LOG(level, "格式字符串", args...)`，`level` 为大写标记
+`TRACE`、`DEBUG`、`INFO`、`WARN`、`ERROR` 或 `CRITICAL`；无参数日志可写成
+`ZX_LOG(INFO, "Ready")`。级别过滤发生在参数求值之前。
+原有 `LOG_*`、`ZXLOG_*` 分级日志宏及 `ZXLOG_NO_SHORT_MACROS` 开关已移除。
+`Options::level` 和 `set_level()` 仍使用 `zxlog::Level` 枚举。
+
 ```cpp
 #include "zxlog/zxlog.h"
 #include "build_id.h" // GN generate_build_id 生成
@@ -97,13 +103,13 @@ if (!logger.initialize(opts, &error)) {
     // 通过其它可靠通道输出初始化错误
 }
 
-LOG_INFO("Motor speed: {}, current: {:.2f}", 1200, 1.52f);
-LOG_WARN("Sensor ID: {:04x}", 0x2a);
-LOG_DEBUG("Aligned: [{:>8}]", "LiDAR");
+ZX_LOG(INFO, "Motor speed: {}, current: {:.2f}", 1200, 1.52f);
+ZX_LOG(WARN, "Sensor ID: {:04x}", 0x2a);
+ZX_LOG(DEBUG, "Aligned: [{:>8}]", "LiDAR");
 
 // 仅 RUNTIME 构建可用，控制事件与业务日志在队列内有全局序号。
 logger.set_mode(zxlog::OutputMode::Text);
-LOG_INFO("Now in text mode: {}", 1);
+ZX_LOG(INFO, "Now in text mode: {}", 1);
 
 logger.flush(true); // 后台屏障 + fdatasync，失败返回 false
 logger.shutdown();
@@ -119,7 +125,7 @@ template<> struct LogAdapter<SensorCode> {
     static constexpr Wire to_wire(const SensorCode& x) noexcept { return x.value; }
 };
 }
-LOG_INFO("Sensor={:04X}", SensorCode{42});
+ZX_LOG(INFO, "Sensor={:04X}", SensorCode{42});
 ```
 
 **约束**：转换必须无异常、低开销；设备端和 Python 解码器看到的是 `Wire` 的类型与值。复杂结构体如 Pose/PointCloud 需要后续独立的稳定 Schema，不能直接把 C++ 对象布局写入日志。字符串必须在日志调用期间复制内容，不能只留下 `char*` 指针。

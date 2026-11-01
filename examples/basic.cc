@@ -49,23 +49,23 @@ int main(int argc, char **argv) {
 
     std::uint32_t speed = 1200;
     float current = 1.52f;
-    LOG_INFO("Motor speed: {}, current: {:.2f}", speed, current);
-    LOG_DEBUG("Pose: ({:.2f}, {:.2f})", 1.25, 3.50);
-    LOG_WARN("Sensor ID: {:04x}", std::uint32_t{0x2a});
-    LOG_ERROR("Escaped {{}} error code: {}", std::int32_t{-3});
-    LOG_INFO("Ready");
-    LOG_INFO("Sensor: {}", std::string_view{"LiDAR"});
-    LOG_INFO("Enabled: {} char: {}", true, 'R');
-    LOG_INFO("Aligned: '{:>8}'", "LiDAR");
-    LOG_INFO("Manual args: {1} {0}", "first", "second");
-    LOG_INFO("Strong type: {:06X}", SensorCode{0x2a});
-    LOG_INFO("Dynamic width: [{:>{}}]", "go", 6);
-    LOG_INFO("Signed exp: {:+.3e}", 3.25);
-    LOG_INFO("Alt hex: {:#08x}", std::uint32_t{42});
+    ZX_LOG(INFO, "Motor speed: {}, current: {:.2f}", speed, current);
+    ZX_LOG(DEBUG, "Pose: ({:.2f}, {:.2f})", 1.25, 3.50);
+    ZX_LOG(WARN, "Sensor ID: {:04x}", std::uint32_t{0x2a});
+    ZX_LOG(ERROR, "Escaped {{}} error code: {}", std::int32_t{-3});
+    ZX_LOG(INFO, "Ready");
+    ZX_LOG(INFO, "Sensor: {}", std::string_view{"LiDAR"});
+    ZX_LOG(INFO, "Enabled: {} char: {}", true, 'R');
+    ZX_LOG(INFO, "Aligned: '{:>8}'", "LiDAR");
+    ZX_LOG(INFO, "Manual args: {1} {0}", "first", "second");
+    ZX_LOG(INFO, "Strong type: {:06X}", SensorCode{0x2a});
+    ZX_LOG(INFO, "Dynamic width: [{:>{}}]", "go", 6);
+    ZX_LOG(INFO, "Signed exp: {:+.3e}", 3.25);
+    ZX_LOG(INFO, "Alt hex: {:#08x}", std::uint32_t{42});
 
     int side_effect = 0;
     logger.set_level(zxlog::Level::Off);
-    LOG_INFO("Should not execute: {}", ++side_effect);
+    ZX_LOG(INFO, "Should not execute: {}", ++side_effect);
     logger.set_level(zxlog::Level::Trace);
     if (side_effect != 0) {
         return 4;
@@ -76,7 +76,7 @@ int main(int argc, char **argv) {
         for (std::uint32_t worker = 0; worker < 4; ++worker) {
             producers.emplace_back([worker] {
                 for (std::uint32_t seq = 0; seq < 500; ++seq) {
-                    LOG_DEBUG("worker={} sequence={}", worker, seq);
+                    ZX_LOG(DEBUG, "worker={} sequence={}", worker, seq);
                 }
             });
         }
@@ -88,7 +88,7 @@ int main(int argc, char **argv) {
 
     if (mode == "churn") {
         for (unsigned i = 0; i < 20; ++i) {
-            std::thread producer([i] { LOG_INFO("churn worker={}", i); });
+            std::thread producer([i] { ZX_LOG(INFO, "churn worker={}", i); });
             producer.join();
             // Confirm prior producer's ring was drained before next registration.
             if (!logger.flush()) {
@@ -99,7 +99,7 @@ int main(int argc, char **argv) {
 
     if (mode == "rotate") {
         for (int i = 0; i < 300; ++i) {
-            LOG_INFO("rotation sequence={:05d}", i);
+            ZX_LOG(INFO, "rotation sequence={:05d}", i);
         }
     }
 
@@ -108,12 +108,12 @@ int main(int argc, char **argv) {
             return 5;
         }
 
-        LOG_INFO("Phase: {}", "text");
+        ZX_LOG(INFO, "Phase: {}", "text");
         if (!logger.set_mode(zxlog::OutputMode::Binary)) {
             return 6;
         }
 
-        LOG_INFO("Phase: {}", "binary");
+        ZX_LOG(INFO, "Phase: {}", "binary");
     }
 
     if (!logger.flush(true)) {
