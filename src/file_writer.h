@@ -1,5 +1,7 @@
 #pragma once
+
 #include "zxlog/protocol.h"
+
 #include <array>
 #include <atomic>
 #include <cstddef>

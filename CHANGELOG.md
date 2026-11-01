@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add `Logger::create()` and dual `ZX_LOG(level, ...)` / `ZX_LOG(logger, level, ...)` forms, accepting logger references and raw/unique/shared pointers. Evaluate logger expressions once and skip arguments for null, disabled or closed instances.
+- Isolate queues, workers, sequence barriers, files and statistics per logger. Use bounded per-thread weak bindings keyed by unique instance IDs; release queues at shutdown and combine record admission/closing in one atomic state.
+- Reserve normalized output paths and numeric archive families before opening files. Reject overlapping instances, active symlinks/hard-link aliases and RUNTIME internal path collisions. Roll back resource ownership on initialization failure.
+- Add multi-logger integration checks in all three modes for isolation, TLS reclamation/capacity, concurrent shutdown, path conflicts, independent rotation, metadata stripping and C++/Python decoding.
 - Unify logging calls as `ZX_LOG(level, ...)`, using `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, or `CRITICAL`. Remove the per-level `LOG_*` / `ZXLOG_*` macros and `ZXLOG_NO_SHORT_MACROS` switch. Preserve argument filtering, C++17 compile-time format checks, and build-time LogSite metadata extraction.
 
 ## v0.4.0 (2026-11-01)

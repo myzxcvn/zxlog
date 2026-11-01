@@ -1,4 +1,5 @@
 #pragma once
+
 #include "zxlog/protocol.h"
 #include "zxlog/codec.h"
 #include <array>

@@ -1,6 +1,7 @@
 #include "zxlog/logger.h"
 
 #include "file_writer.h"
+#include "path_lease.h"
 #if ZXLOG_BUILD_MODE != 2
 #include "text_format.h"
 #endif
@@ -11,8 +12,44 @@
 #include <iomanip>
 #include <sstream>
 #include <unistd.h>
+#include <limits>
+#include <stdexcept>
 
 namespace zxlog {
+namespace {
+
+std::uint64_t next_instance_id() {
+    static std::atomic<std::uint64_t> next{1};
+    auto id = next.load(std::memory_order_relaxed);
+    while (id != std::numeric_limits<std::uint64_t>::max()) {
+        if (next.compare_exchange_weak(id, id + 1, std::memory_order_relaxed)) {
+            return id;
+        }
+    }
+
+    throw std::overflow_error("zxlog instance IDs exhausted");
+}
+
+}  // namespace
+
+Logger::Logger() : instance_id_(next_instance_id()) {}
+
+std::unique_ptr<Logger> Logger::create(const Options &options, std::string *error) {
+    try {
+        auto logger = std::unique_ptr<Logger>(new Logger);
+        if (!logger->initialize(options, error)) {
+            return nullptr;
+        }
+
+        return logger;
+    } catch (const std::exception &ex) {
+        if (error) {
+            *error = ex.what();
+        }
+
+        return nullptr;
+    }
+}
 
 Logger &Logger::instance() {
     static Logger singleton;
@@ -35,9 +72,13 @@ std::uint64_t Logger::ns_steady() noexcept {
 
 bool Logger::initialize(const Options &options, std::string *error) {
     std::lock_guard<std::mutex> life(lifecycle_mutex_);
+    if (error) {
+        error->clear();
+    }
+
     if (initialized_) {
         if (error) {
-            *error = "zxlog supports one lifecycle per process";
+            *error = "zxlog supports one lifecycle per logger";
         }
 
         return false;
@@ -52,6 +93,13 @@ bool Logger::initialize(const Options &options, std::string *error) {
         return false;
     }
 
+    if (options.initial_mode != OutputMode::Text && options.initial_mode != OutputMode::Binary) {
+        if (error) {
+            *error = "invalid output mode";
+        }
+
+        return false;
+    }
 #if ZXLOG_BUILD_MODE == 1
     if (options.initial_mode != OutputMode::Text) {
         if (error) {
@@ -60,7 +108,6 @@ bool Logger::initialize(const Options &options, std::string *error) {
 
         return false;
     }
-
 #elif ZXLOG_BUILD_MODE == 2
     if (options.initial_mode != OutputMode::Binary) {
         if (error) {
@@ -70,83 +117,163 @@ bool Logger::initialize(const Options &options, std::string *error) {
         return false;
     }
 #endif
-    options_ = options;
-    active_mode_ = options.initial_mode;
-    start_wall_ns_ = ns_wall();
-    start_steady_ns_ = ns_steady();
-    queues_.reserve(options.max_producers);
-    for (unsigned i = 0; i < options.max_producers; ++i) {
-        queues_.push_back(std::make_shared<ProducerQueue>(options.per_thread_slots));
+    constexpr auto minimum_file_bytes =
+        ZXLOG_BUILD_MODE == 1 ? kMaxRecordSize : kBinaryHeaderSize + kMaxRecordSize;
+    if (options.max_files < 1 || options.max_files > 256 || options.io_batch_bytes == 0 ||
+        options.io_batch_bytes > (1u << 20) || options.max_file_bytes < minimum_file_bytes ||
+        options.max_file_bytes > (std::uint64_t(1) << 40)) {
+        if (error) {
+            *error = "invalid file writer quota/batch configuration";
+        }
+
+        return false;
     }
 
-    detail::FileWriter::Config fc;
-    fc.max_file_bytes = options.max_file_bytes;
-    fc.max_files = options.max_files;
-    fc.batch_bytes = options.io_batch_bytes;
-    fc.sync_every_records = options.sync_every_records;
-    fc.repair_on_start = options.repair_on_start;
-    fc.sync_on_rotate = options.sync_on_rotate;
-
+    try {
+        // Nothing is published to producers until all resources and the worker
+        // exist. Local RAII closes writers before releasing their path lease.
+        std::vector<std::shared_ptr<ProducerQueue>> queues;
+        queues.reserve(options.max_producers);
+        for (unsigned i = 0; i < options.max_producers; ++i) {
+            queues.push_back(std::make_shared<ProducerQueue>(options.per_thread_slots));
+        }
 #if ZXLOG_BUILD_MODE != 2
-    dictionary_ = std::make_unique<detail::Dictionary>();
-    if (!dictionary_->load(options.dictionary_path, options.build_id, error)) {
-        return false;
-    }
-
-    text_file_ = std::make_unique<detail::FileWriter>();
-    fc.path = options.text_path;
-    if (!text_file_->open(fc, {}, false, error)) {
-        return false;
-    }
+        auto dictionary = std::make_unique<detail::Dictionary>();
+        if (!dictionary->load(options.dictionary_path, options.build_id, error)) {
+            return false;
+        }
+#endif
+        std::vector<std::string> paths;
+#if ZXLOG_BUILD_MODE != 2
+        paths.push_back(options.text_path);
 #endif
 #if ZXLOG_BUILD_MODE != 1
-    std::array<std::uint8_t, kBinaryHeaderSize> header{};
-    std::memcpy(header.data(), "ZXLOG02\0", 8);
-    detail::write_u16(header.data() + 8, kWireVersion);
-    detail::write_u16(header.data() + 10, kBinaryHeaderSize);
-    std::memcpy(header.data() + 12, options.build_id.data(), options.build_id.size());
-    detail::write_u64(header.data() + 28, start_wall_ns_);
-    detail::write_u64(header.data() + 36, start_steady_ns_);
-    detail::write_u32(header.data() + 44, static_cast<std::uint32_t>(::getpid()));
-    // 12-byte process/boot discriminator, not a cryptographic nonce.
-    detail::write_u64(header.data() + 48, start_wall_ns_ ^ (start_steady_ns_ << 1));
-    detail::write_u32(header.data() + 56, static_cast<std::uint32_t>(start_steady_ns_ >> 32));
-    detail::write_u32(header.data() + 60, detail::crc32(header.data(), 60));
-    binary_file_ = std::make_unique<detail::FileWriter>();
-    fc.path = options.binary_path;
-    if (!binary_file_->open(fc, header, true, error)) {
+        paths.push_back(options.binary_path);
+#endif
+        auto lease = detail::PathLease::acquire(paths, error);
+        if (!lease) {
+            return false;
+        }
+
+        std::size_t path_index = 0;
+        detail::FileWriter::Config fc;
+        fc.max_file_bytes = options.max_file_bytes;
+        fc.max_files = options.max_files;
+        fc.batch_bytes = options.io_batch_bytes;
+        fc.sync_every_records = options.sync_every_records;
+        fc.repair_on_start = options.repair_on_start;
+        fc.sync_on_rotate = options.sync_on_rotate;
+        const auto wall = ns_wall();
+        const auto steady = ns_steady();
+#if ZXLOG_BUILD_MODE != 2
+        auto text_file = std::make_unique<detail::FileWriter>();
+        fc.path = lease->paths()[path_index++];
+        if (!text_file->open(fc, {}, false, error)) {
+            return false;
+        }
+#endif
+#if ZXLOG_BUILD_MODE != 1
+        std::array<std::uint8_t, kBinaryHeaderSize> header{};
+        std::memcpy(header.data(), "ZXLOG02\0", 8);
+        detail::write_u16(header.data() + 8, kWireVersion);
+        detail::write_u16(header.data() + 10, kBinaryHeaderSize);
+        std::memcpy(header.data() + 12, options.build_id.data(), options.build_id.size());
+        detail::write_u64(header.data() + 28, wall);
+        detail::write_u64(header.data() + 36, steady);
+        detail::write_u32(header.data() + 44, static_cast<std::uint32_t>(::getpid()));
+        detail::write_u64(header.data() + 48, wall ^ (steady << 1));
+        detail::write_u32(header.data() + 56, static_cast<std::uint32_t>(steady >> 32));
+        detail::write_u32(header.data() + 60, detail::crc32(header.data(), 60));
+        auto binary_file = std::make_unique<detail::FileWriter>();
+        fc.path = lease->paths()[path_index++];
+        if (!binary_file->open(fc, header, true, error)) {
+            return false;
+        }
+#endif
+        options_ = options;
+        active_mode_ = options.initial_mode;
+        start_wall_ns_ = wall;
+        start_steady_ns_ = steady;
+        queues_ = std::move(queues);
+        path_lease_ = std::move(lease);
+#if ZXLOG_BUILD_MODE != 2
+        dictionary_ = std::move(dictionary);
+        text_file_ = std::move(text_file);
+#endif
+#if ZXLOG_BUILD_MODE != 1
+        binary_file_ = std::move(binary_file);
+#endif
+        closing_ = false;
+        minimum_.store(options.level, std::memory_order_release);
+        worker_ = std::thread([this] { consume(); });
+        initialized_ = true;
+        record_state_.store(0, std::memory_order_release);
+        accepting_.store(true, std::memory_order_release);
+        return true;
+    } catch (const std::exception &ex) {
+        // This also covers thread creation failure after ownership transfer.
+        text_file_.reset();
+        binary_file_.reset();
+#if ZXLOG_BUILD_MODE != 2
+        dictionary_.reset();
+#endif
+        queues_.clear();
+        path_lease_.reset();
+        if (error) {
+            *error = ex.what();
+        }
+
         return false;
     }
-#endif
-    closing_ = false;
-    minimum_.store(options.level, std::memory_order_release);
-    initialized_ = true;
-    accepting_.store(true, std::memory_order_release);
-    worker_ = std::thread([this] { consume(); });
-    return true;
 }
 
 Logger::ProducerQueue *Logger::current_producer() noexcept {
-    // TLS owns a reference so a late TLS destructor cannot access freed storage.
-    // A retiring queue returns to the pool only after the consumer has drained it.
-    struct ThreadQueue {
-        std::shared_ptr<ProducerQueue> queue;
-        ~ThreadQueue() {
-            if (queue) {
-                queue->state.store(2, std::memory_order_release);
+    struct Binding {
+        std::uint64_t id = 0;
+        std::weak_ptr<ProducerQueue> lifetime;
+        ProducerQueue *queue = nullptr;
+        ~Binding() {
+            if (auto alive = lifetime.lock()) {
+                alive->state.store(2, std::memory_order_release);
             }
         }
     };
 
-    thread_local ThreadQueue tls;
-    if (tls.queue) {
-        return tls.queue.get();
+    struct ThreadQueues {
+        std::array<Binding, kMaxLoggersPerThread> bindings;
+        Binding *last = nullptr;
+    };
+
+    thread_local ThreadQueues tls;
+    // record() holds an admission count and shutdown waits before freeing
+    // queues. IDs never repeat, so a raw cached queue is safe on this path.
+    if (tls.last && tls.last->id == instance_id_) {
+        return tls.last->queue;
+    }
+
+    Binding *free = nullptr;
+    for (auto &binding : tls.bindings) {
+        if (binding.id == instance_id_) {
+            tls.last = &binding;
+            return binding.queue;
+        }
+
+        if (!free && binding.lifetime.expired()) {
+            free = &binding;
+        }
+    }
+
+    if (!free) {
+        return nullptr;
     }
 
     for (const auto &q : queues_) {
         unsigned expected = 0;
         if (q->state.compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) {
-            tls.queue = q;
+            free->id = instance_id_;
+            free->lifetime = q;
+            free->queue = q.get();
+            tls.last = free;
             return q.get();
         }
     }
@@ -166,8 +293,14 @@ bool Logger::enqueue_control(Control control) {
         return false;
     }
 
-    control.sequence = sequence_.fetch_add(1, std::memory_order_acq_rel);
-    controls_.push_back(std::move(control));
+    // Reserve sequence only after the potentially allocating insertion succeeds.
+    try {
+        controls_.push_back(std::move(control));
+    } catch (const std::bad_alloc &) {
+        return false;
+    }
+
+    controls_.back().sequence = sequence_.fetch_add(1, std::memory_order_acq_rel);
     lock.unlock();
     wake_cv_.notify_one();
     return true;
@@ -352,8 +485,9 @@ void Logger::shutdown() {
     }
 
     accepting_.store(false, std::memory_order_release);
+    record_state_.fetch_or(kClosingBit, std::memory_order_acq_rel);
     control_space_cv_.notify_all();
-    while (inflight_.load(std::memory_order_acquire) != 0) {
+    while ((record_state_.load(std::memory_order_acquire) & ~kClosingBit) != 0) {
         std::this_thread::yield();
     }
 
@@ -375,7 +509,10 @@ void Logger::shutdown() {
         binary_file_->close();
     }
 
-    // Keep initialized=true to prevent TLS registrations from being reused.
+    // TLS keeps weak references only; release slots and path ownership now.
+    queues_.clear();
+    path_lease_.reset();
+    // Keep initialized=true: a new lifetime requires a new instance ID.
 }
 
 Stats Logger::stats() const noexcept {

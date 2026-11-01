@@ -6,6 +6,12 @@ See **[README.zh-CN.md](README.zh-CN.md)** for complete architecture, usage, GN/
 
 Use `ZX_LOG(level, "format", args...)` with the uppercase token `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, or `CRITICAL`. Calls without arguments, such as `ZX_LOG(INFO, "Ready")`, are supported. Filtered calls do not evaluate their arguments. The former `LOG_*` and `ZXLOG_*` per-level macros and `ZXLOG_NO_SHORT_MACROS` switch have been removed; runtime level configuration still uses `zxlog::Level`.
 
+`ZX_LOG(logger, level, "format", args...)` selects a custom logger; omitting it selects `Logger::instance()`. Create an initialized custom instance with `Logger::create(options, &error)`, which returns a `std::unique_ptr<Logger>` or null on failure. Set distinct output paths for each instance, including both paths in RUNTIME builds. Objects/references, raw pointers, unique pointers and shared pointers are accepted. Parenthesize complex expressions: `ZX_LOG((*ptr), INFO, "Ready")`. The logger expression is evaluated once; null or closed loggers discard lazily and never fall back to the global logger.
+
+Each instance owns its queues, worker, output files, rotation and statistics. Order and flush barriers apply within one instance. The same linked application's loggers use the same build dictionary. Each thread has a bounded cache of 32 live logger bindings; exhaustion increments the target's dropped count, and closing an instance releases its queues and cache capacity. Stop all callers before destroying an instance; `shutdown()` may overlap logging but is not a durable flush. Successful initialization is once per instance; failures may be retried.
+
+Output paths and numeric archive families are reserved within the process before any output opens. Parent-directory aliases are normalized; overlapping families and existing active symlinks/hard-link aliases are rejected. Closing releases the reservation. External processes/filesystem operations must not modify these files concurrently. Failed creation releases resources but does not roll back completed filesystem changes. See the Chinese README for complete usage and ownership contracts.
+
 ```bash
 gn gen out/Binary --args='zxlog_mode="BINARY"'
 ninja -C out/Binary check
@@ -17,7 +23,9 @@ gn gen out/Runtime --args='zxlog_mode="RUNTIME"'
 ninja -C out/Runtime check
 ```
 
-**Verification note (2026-11-01):** With GCC 12.3.0, GN 2318 and Ninja 1.10.1, `gn gen`, `gn check` and the full `check` target pass in all three modes, including extraction of 19 LogSites and metadata stripping. The BINARY build also passes with `zxlog_optimize=false`. Source requires Linux GCC/Clang, POSIX, ELF, objcopy, Python 3, GN and Ninja for the full GN workflow.
+**Verification note (2026-11-01):** With GCC 12.3.0, GN 2318 and Ninja 1.10.1, `gn gen`, `gn check` and the full `check` target pass in all three modes, including the original 19-site demo and the separately extracted multi-logger test executable. Tests cover isolation, lifecycle, TLS limits/reclamation, path conflicts, independent rotation/mode switching, decoding and metadata stripping. The BINARY build also passes with `zxlog_optimize=false`. Source requires Linux GCC/Clang, POSIX, ELF, objcopy, Python 3, GN and Ninja for the full GN workflow.
+
+Clang 21.1.5 `-O1 -g` multi-logger checks also pass with AddressSanitizer/UndefinedBehaviorSanitizer in RUNTIME mode and ThreadSanitizer in BINARY mode, including dictionary extraction and metadata stripping, with no sanitizer diagnostics.
 
 GN propagates `build/zxlog_meta.ld` to executables using `zxlog`. External build systems must also compile with `-fdata-sections` and link with `-Wl,-T,/path/to/zxlog/build/zxlog_meta.ld`. The script retains metadata and collects template-local blobs that GCC 12 places in `.rodata.*` despite their `section` attribute ([GCC PR c++/88061](https://gcc.gnu.org/pipermail/gcc-bugs/2023-December/846120.html)). Extract the dictionary from the linked ELF before stripping `zxlog_meta` from the deployment image.
 

@@ -30,7 +30,7 @@ config("metadata_link") {
 }
 
 static_library("zxlog") {
-  sources = [ "src/logger.cc", "src/file_writer.cc" ]
+  sources = [ "src/logger.cc", "src/file_writer.cc", "src/path_lease.cc" ]
   if (zxlog_mode != "BINARY") {
     sources += [ "src/text_format.cc" ]
   }
@@ -55,6 +55,8 @@ _build_id_sources = [
   "src/logger.cc",
   "src/file_writer.cc",
   "src/file_writer.h",
+  "src/path_lease.cc",
+  "src/path_lease.h",
   "src/text_format.h",
   "third_party/fmt/include/fmt/base.h",
   "third_party/fmt/include/fmt/format.h",
@@ -63,6 +65,7 @@ _build_id_sources = [
   "src/text_format.cc",
   "examples/basic.cc",
   "tests/unit.cc",
+  "tests/multi_logger.cc",
   "tools/decode.cc",
 ]
 
@@ -132,6 +135,54 @@ executable("zxlog_unit") {
   configs = [ ":common" ]
 }
 
+executable("zxlog_multi_raw") {
+  sources = [ "tests/multi_logger.cc" ]
+  deps = [ ":zxlog", ":generate_build_id" ]
+  include_dirs = [ "$root_gen_dir" ]
+}
+
+action("zxlog_multi_dictionary") {
+  script = "//tools/extract_dictionary.py"
+  deps = [ ":zxlog_multi_raw", ":generate_build_id" ]
+  inputs = [ "$root_out_dir/zxlog_multi_raw", "$root_gen_dir/build_id.txt" ]
+  outputs = [ "$root_out_dir/multi.zdict", "$root_out_dir/multi_dictionary.json" ]
+  args = [
+    "--elf", rebase_path(inputs[0], root_build_dir),
+    "--build-id-file", rebase_path(inputs[1], root_build_dir),
+    "--output", rebase_path(outputs[0], root_build_dir),
+    "--json", rebase_path(outputs[1], root_build_dir),
+  ]
+}
+
+action("prepare_multi_image") {
+  script = "//tools/strip_metadata.py"
+  deps = [ ":zxlog_multi_dictionary", ":zxlog_multi_raw" ]
+  inputs = [ "$root_out_dir/zxlog_multi_raw" ]
+  outputs = [ "$root_out_dir/zxlog_multi" ]
+  args = [
+    "--input", rebase_path(inputs[0], root_build_dir),
+    "--output", rebase_path(outputs[0], root_build_dir),
+  ]
+}
+
+action("check_multi") {
+  script = "//tests/multi_logger.py"
+  deps = [ ":prepare_multi_image", ":zxlog_multi_dictionary", ":zxlog_decode" ]
+  inputs = [
+    "$root_out_dir/zxlog_multi", "$root_out_dir/multi.zdict", "$root_out_dir/zxlog_decode",
+    "tools/decode.py", "tools/extract_dictionary.py",
+  ]
+  outputs = [ "$root_out_dir/check_multi.ok" ]
+  args = [
+    "--exe", rebase_path(inputs[0], root_build_dir),
+    "--dict", rebase_path(inputs[1], root_build_dir),
+    "--cpp-decoder", rebase_path(inputs[2], root_build_dir),
+    "--mode", zxlog_mode,
+    "--work", rebase_path("$root_out_dir/test-results/multi", root_build_dir),
+    "--stamp", rebase_path(outputs[0], root_build_dir),
+  ]
+}
+
 group("zxlog_all") {
   deps = [ ":prepare_runtime_image", ":zxlog_unit", ":zxlog_decode" ]
 }
@@ -139,7 +190,7 @@ group("zxlog_all") {
 # ninja -C out/Release check: end-to-end test on the build products.
 action("check") {
   script = "//tests/integration.py"
-  deps = [ ":prepare_runtime_image", ":zxlog_dictionary", ":zxlog_unit", ":zxlog_decode" ]
+  deps = [ ":prepare_runtime_image", ":zxlog_dictionary", ":zxlog_unit", ":zxlog_decode", ":check_multi" ]
   inputs = [
     "$root_out_dir/zxlog_demo",
     "$root_out_dir/zxlog_unit",
