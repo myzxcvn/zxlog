@@ -153,6 +153,8 @@ if (!motor) {
 
 ### 自定义强类型参数（单个内置 Wire 类型）
 
+`to_wire()` 必须声明 `noexcept`，返回类型去掉引用及 cv 修饰后必须等于 `Wire`；`Wire` 必须是受支持的内置类型。每个实际编码的参数只转换一次，容量不足时整条事件丢弃，不发布部分记录。
+
 ```cpp
 struct SensorCode { std::uint32_t value; };
 namespace zxlog {

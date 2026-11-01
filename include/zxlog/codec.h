@@ -31,9 +31,20 @@ struct has_log_adapter<
     : std::true_type {};
 
 template <typename T>
+constexpr Type type_of() noexcept;
+
+template <typename T>
 decltype(auto) wire_value(const T &value) noexcept {
     using V = std::remove_cv_t<std::remove_reference_t<T>>;
     if constexpr (has_log_adapter<V>::value) {
+        using Wire = typename LogAdapter<V>::Wire;
+        using Result = decltype(LogAdapter<V>::to_wire(value));
+        static_assert(std::is_same_v<std::decay_t<Result>, Wire>,
+                      "zxlog: LogAdapter return type must match Wire");
+        static_assert(!has_log_adapter<Wire>::value && type_of<Wire>() != Type::Invalid,
+                      "zxlog: LogAdapter Wire must be a supported built-in type");
+        static_assert(noexcept(LogAdapter<V>::to_wire(value)),
+                      "zxlog: LogAdapter::to_wire must be noexcept");
         return LogAdapter<V>::to_wire(value);
     } else {
         return (value);
@@ -171,14 +182,20 @@ inline std::uint64_t read_u64(const std::uint8_t *p) noexcept {
 }
 
 template <typename T>
-void write_value(std::uint8_t *&p, const T &value) noexcept {
+bool write_value(std::uint8_t *&p, const std::uint8_t *end, const T &value) noexcept {
     constexpr Type code = type_of<T>();
     static_assert(code != Type::Invalid, "zxlog: unsupported log argument type");
     using Custom = std::remove_cv_t<std::remove_reference_t<T>>;
     if constexpr (has_log_adapter<Custom>::value) {
-        write_value(p, wire_value(value));
+        // Convert exactly once; the temporary stays alive through this call.
+        return write_value(p, end, wire_value(value));
     } else if constexpr (code == Type::String) {
         const auto s = string_view_of(value);
+        const auto remaining = static_cast<std::size_t>(end - p);
+        if (remaining < 4 || s.size() > remaining - 4 ||
+            s.size() > std::numeric_limits<std::uint32_t>::max()) {
+            return false;
+        }
         write_u32(p, static_cast<std::uint32_t>(s.size()));
         p += 4;
         if (!s.empty()) {
@@ -186,6 +203,8 @@ void write_value(std::uint8_t *&p, const T &value) noexcept {
         }
 
         p += s.size();
+    } else if (static_cast<std::size_t>(end - p) < value_size(value)) {
+        return false;
     } else if constexpr (code == Type::F32) {
         std::uint32_t raw;
         static_assert(sizeof(raw) == sizeof(value));
@@ -202,7 +221,7 @@ void write_value(std::uint8_t *&p, const T &value) noexcept {
         using V = std::remove_cv_t<std::remove_reference_t<T>>;
         if constexpr (std::is_enum_v<V>) {
             using Underlying = std::underlying_type_t<V>;
-            write_value(p, static_cast<Underlying>(value));
+            return write_value(p, end, static_cast<Underlying>(value));
         } else if constexpr (code == Type::Boolean || code == Type::Character || code == Type::I8 ||
                              code == Type::U8) {
             *p++ = static_cast<std::uint8_t>(value);
@@ -225,6 +244,8 @@ void write_value(std::uint8_t *&p, const T &value) noexcept {
             }
         }
     }
+
+    return true;
 }
 
 }  // namespace zxlog::detail

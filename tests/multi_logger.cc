@@ -11,6 +11,17 @@
 #include <stdexcept>
 #include <thread>
 
+struct ChangingText { mutable unsigned calls = 0; };
+namespace zxlog {
+template <> struct LogAdapter<ChangingText> {
+    using Wire = std::string_view;
+    static Wire to_wire(const ChangingText &value) noexcept {
+        static const std::array<char, 2000> large{};
+        return ++value.calls == 1 ? Wire{"once"} : Wire{large.data(), large.size()};
+    }
+};
+}
+
 namespace fs = std::filesystem;
 
 namespace {
@@ -79,6 +90,9 @@ void isolation(const Fixture &f) {
     ZX_LOG(a, WARN, "custom level {}", 3);
     ZX_LOG(a, ERROR, "custom level {}", 4);
     ZX_LOG(a, CRITICAL, "custom level {}", 5);
+    ChangingText changing;
+    ZX_LOG(a, INFO, "adapter {}", changing);
+    require(changing.calls == 1, "adapter converted more than once");
     auto *pointer = a.get();
     ZX_LOG(pointer, INFO, "pointer");
     ZX_LOG((*pointer), INFO, "reference");
@@ -152,6 +166,21 @@ void isolation(const Fixture &f) {
     report("b", *b);
     report("shared", *shared);
     global.shutdown();
+}
+
+void encoding(const Fixture &f) {
+    auto logger = f.create("encoding");
+    ChangingText changing;
+    const auto emit = [&] { ZX_LOG(logger, INFO, "adapter {}", changing); };
+    emit();
+    emit(); // The second conversion is oversize and must not publish a record.
+    ZX_LOG(logger, INFO, "partial {} {}", 42, std::string(2000, 'x'));
+    ZX_LOG(logger, INFO, "after rejected records");
+    flush(*logger);
+    require(changing.calls == 2, "adapter conversion count changed");
+    require(logger->stats().accepted == 2 && logger->stats().dropped == 2,
+            "partial/oversize record published");
+    report("encoding", *logger);
 }
 
 void churn(const Fixture &f) {
@@ -362,6 +391,8 @@ int main(int argc, char **argv) {
         const std::string scenario = argv[1];
         if (scenario == "isolation")
             isolation(fixture);
+        else if (scenario == "encoding")
+            encoding(fixture);
         else if (scenario == "churn")
             churn(fixture);
         else if (scenario == "capacity")

@@ -67,7 +67,7 @@ def main(a):
         return result
 
     roots = {}
-    for scenario in ('isolation', 'churn', 'capacity', 'thread_churn', 'close', 'conflicts', 'rotation'):
+    for scenario in ('isolation', 'encoding', 'churn', 'capacity', 'thread_churn', 'close', 'conflicts', 'rotation'):
         root = cases / scenario
         root.mkdir()
         roots[scenario] = root
@@ -81,7 +81,7 @@ def main(a):
             else:
                 assert len(data) == accepted, (scenario, name, accepted, len(data))
             assert not any('filtered' in message for _, message in data)
-            if scenario not in ('capacity', 'close'):
+            if scenario not in ('capacity', 'close', 'encoding'):
                 assert dropped == 0, (scenario, output)
 
     root = roots['isolation']
@@ -99,6 +99,7 @@ def main(a):
         assert (level, f'level {i}') in global_data
         assert (level, f'custom level {i}') in a_data
     assert all(('INFO', message) in a_data for message in ('pointer', 'reference', 'resolved'))
+    assert ('INFO', 'adapter once') in a_data
     assert ('ERROR', 'accepted 1') in a_data
     assert ('INFO', 'after other closed') in b_data
     assert records(root, 'shared') == [('INFO', 'shared')]
@@ -110,6 +111,8 @@ def main(a):
         assert ('INFO', 'other stays binary') in records(root, 'a', 'binary')
         assert records(root, 'global', 'text') == records(root, 'a', 'text') == []
 
+    assert records(roots['encoding'], 'encoding') == [('INFO', 'adapter once'),
+                                                       ('INFO', 'after rejected records')]
     churn = records(roots['churn'], 'churn')
     last = int(churn[-1][1].split()[-1])
     assert len(churn) == 3 and churn == [('INFO', f'generation {i}') for i in range(last - 2, last + 1)]

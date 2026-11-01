@@ -102,31 +102,6 @@ public:
         }
 
         const auto finish = [this]() noexcept { record_state_.fetch_sub(1, std::memory_order_release); };
-        std::size_t bytes = kRecordHeaderSize;
-        bool fits = true;
-        if constexpr (sizeof...(Args) > 0) {
-            const auto add_size = [&](const auto &arg) {
-                if (!fits) {
-                    return;
-                }
-
-                const auto n = detail::value_size(arg);
-                if (n > kMaxRecordSize - bytes) {
-                    fits = false;
-                } else {
-                    bytes += n;
-                }
-            };
-
-            (add_size(args), ...);
-        }
-
-        if (!fits) {
-            dropped_.fetch_add(1, std::memory_order_relaxed);
-            finish();
-            return;
-        }
-
         ProducerQueue *q = current_producer();
         if (!q) {
             dropped_.fetch_add(1, std::memory_order_relaxed);
@@ -142,19 +117,22 @@ public:
         }
 
         Slot &slot = q->slots[tail % q->slots.size()];
-        slot.length = static_cast<std::uint32_t>(bytes);
         std::uint8_t *data = slot.bytes.data();
+        std::uint8_t *p = data + kRecordHeaderSize;
+        if (!(detail::write_value(p, data + slot.bytes.size(), args) && ...)) {
+            // An incomplete slot is never published and consumes no sequence.
+            dropped_.fetch_add(1, std::memory_order_relaxed);
+            finish();
+            return;
+        }
+        const auto bytes = static_cast<std::size_t>(p - data);
+        slot.length = static_cast<std::uint32_t>(bytes);
         const auto now = std::chrono::steady_clock::now().time_since_epoch();
         const std::uint64_t stamp =
             static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
         detail::write_u32(data, static_cast<std::uint32_t>(bytes));
         detail::write_u32(data + 4, site_id);
         detail::write_u64(data + 8, stamp);
-        if constexpr (sizeof...(Args) > 0) {
-            std::uint8_t *p = data + kRecordHeaderSize;
-            (detail::write_value(p, args), ...);
-        }
-
         detail::write_u32(data + 16, detail::record_crc32(data, bytes));
         // Linearization point for cross-producer ordering and mode barriers.
         slot.sequence = sequence_.fetch_add(1, std::memory_order_acq_rel);

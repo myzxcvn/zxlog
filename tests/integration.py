@@ -223,6 +223,20 @@ def do_test(a):
                          '-x', 'c++', '-'], input=invalid, text=True, capture_output=True)
     assert bad.returncode != 0 and 'fmt' in bad.stderr.lower(), bad.stderr
 
+    for result_type, exception_spec, message in (
+            ('int', 'noexcept', 'return type must match Wire'),
+            ('std::uint64_t', '', 'to_wire must be noexcept')):
+        source = ('#include "zxlog/zxlog.h"\nstruct Custom {};\n'
+                  'namespace zxlog { template<> struct LogAdapter<Custom> {'
+                  'using Wire=std::uint64_t; static ' + result_type +
+                  ' to_wire(const Custom&) ' + exception_spec + ' { return 1; }};}\n'
+                  'void f(){ ZX_LOG(INFO, "{}", Custom{}); }')
+        result = subprocess.run(['g++', '-std=c++17', '-fsyntax-only',
+                                 '-I' + str(ROOT / 'include'),
+                                 '-I' + str(ROOT / 'third_party/fmt/include'), '-x', 'c++', '-'],
+                                input=source, text=True, capture_output=True)
+        assert result.returncode != 0 and message in result.stderr, result.stderr
+
     Path(a.stamp).write_text(f'PASS zxlog v0.4 {a.mode}\n', encoding='utf-8')
     print(f'PASS zxlog v0.4: {a.mode}')
 

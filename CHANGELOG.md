@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Encode each argument once into a bounded destination; reject oversize events without publishing partial records. Enforce matching, supported and noexcept LogAdapter conversions.
+
 - Add `Logger::create()` and dual `ZX_LOG(level, ...)` / `ZX_LOG(logger, level, ...)` forms, accepting logger references and raw/unique/shared pointers. Evaluate logger expressions once and skip arguments for null, disabled or closed instances.
 - Isolate queues, workers, sequence barriers, files and statistics per logger. Use bounded per-thread weak bindings keyed by unique instance IDs; release queues at shutdown and combine record admission/closing in one atomic state.
 - Reserve normalized output paths and numeric archive families before opening files. Reject overlapping instances, active symlinks/hard-link aliases and RUNTIME internal path collisions. Roll back resource ownership on initialization failure.
