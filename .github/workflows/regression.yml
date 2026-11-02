@@ -1,8 +1,5 @@
 name: zxlog v0.7 regression
 on:
-  push:
-    branches:
-      - feat/v0.7-resource-codec-sinks-dispatcher
   pull_request:
     branches:
       - main
