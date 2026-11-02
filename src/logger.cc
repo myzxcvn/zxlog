@@ -51,7 +51,8 @@ bool Logger::initialize(const Options &options, std::string *error) {
     }
 
     if (options.max_producers < 1 || options.max_producers > 256 || options.per_thread_slots < 2 ||
-        options.per_thread_slots > 65536) {
+        options.per_thread_slots > 65536 || options.max_record_bytes < 32 ||
+        options.max_record_bytes > kMaxRecordSize || options.max_queue_bytes == 0) {
         if (error) {
             *error = "invalid SPSC registration / slot capacity";
         }
@@ -104,7 +105,8 @@ bool Logger::initialize(const Options &options, std::string *error) {
     }
 
     try {
-        runtime_.prepare(options.max_producers, options.per_thread_slots);
+        if (!runtime_.prepare(options.max_producers, options.per_thread_slots, options.max_record_bytes,
+                              options.max_queue_bytes, error)) return false;
         if (!output_.open(options, error)) {
             runtime_.release_queues();
             return false;
@@ -142,6 +144,8 @@ void Logger::shutdown() {
 Stats Logger::stats() const noexcept {
     auto stats = diagnostics_.snapshot();
     output_.add_stats(stats);
+    stats.queue_memory_bytes = runtime_.queue_memory_bytes();
+    stats.queue_payload_bytes = runtime_.queue_payload_bytes();
     return stats;
 }
 

@@ -62,9 +62,9 @@ public:
             return;
         }
         auto &slot = reservation.record();
-        std::uint8_t *data = slot.bytes.data();
+        std::uint8_t *data = reservation.data();
         std::uint8_t *p = data + kRecordHeaderSize;
-        if (!(detail::write_value(p, data + slot.bytes.size(), args) && ...)) {
+        if (!(detail::write_value(p, data + reservation.capacity(), args) && ...)) {
             diagnostics_.drop(detail::DropReason::RecordTooLarge);
             // An incomplete slot is never published and consumes no sequence.
             finish();

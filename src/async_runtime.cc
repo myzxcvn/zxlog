@@ -6,12 +6,24 @@
 
 namespace zxlog::detail {
 
-void AsyncRuntime::prepare(unsigned max_producers, std::size_t slots) {
+bool AsyncRuntime::prepare(unsigned max_producers, std::size_t slots, std::size_t record_bytes,
+                           std::size_t budget, std::string *error) {
+    // Divide before multiplying to avoid overflow; budget accounts for the
+    // preallocated producer slots, not thread stacks or writer buffers.
+    const std::size_t per_slot = record_bytes + sizeof(ProducerQueue::Slot);
+    if (slots == 0 || max_producers == 0 ||
+        per_slot > budget / slots / max_producers) {
+        if (error) *error = "SPSC queue memory budget exceeded";
+        return false;
+    }
     std::vector<std::shared_ptr<ProducerQueue>> queues;
     queues.reserve(max_producers);
     for (unsigned i = 0; i < max_producers; ++i)
-        queues.push_back(std::make_shared<ProducerQueue>(slots));
+        queues.push_back(std::make_shared<ProducerQueue>(slots, record_bytes));
     queues_ = std::move(queues);
+    queue_payload_bytes_ = static_cast<std::size_t>(max_producers) * slots * record_bytes;
+    queue_memory_bytes_ = static_cast<std::size_t>(max_producers) * slots * per_slot;
+    return true;
 }
 
 void AsyncRuntime::start(OutputBackend &output, Diagnostics &diagnostics) {
@@ -155,7 +167,7 @@ bool AsyncRuntime::pop_event(LogRecord &scratch, Control &ctrl, bool &is_control
             continue;
         }
 
-        const auto &record = q.slots[head % q.slots.size()];
+        const auto &record = q.record(head);
         if (record.sequence != expected) {
             continue;
         }
@@ -163,7 +175,7 @@ bool AsyncRuntime::pop_event(LogRecord &scratch, Control &ctrl, bool &is_control
         scratch.sequence = record.sequence;
         scratch.length = record.length;
         scratch.level = record.level;
-        std::memcpy(scratch.bytes.data(), record.bytes.data(), scratch.length);
+        std::memcpy(scratch.bytes.data(), q.data(head), scratch.length);
         q.read.store(head + 1, std::memory_order_release);
         is_control = false;
         return true;

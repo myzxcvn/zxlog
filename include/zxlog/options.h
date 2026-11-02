@@ -16,6 +16,8 @@ struct Options {
     Level level = Level::Trace;
     unsigned max_producers = 8;         // retired queues are reusable after draining
     std::size_t per_thread_slots = 32;  // SPSC capacity per producer, allocated at init
+    std::size_t max_record_bytes = kMaxRecordSize;  // 32..1024, includes record header
+    std::size_t max_queue_bytes = 8u << 20;  // cap for producer payload + slot metadata
     std::string binary_path = "robot.blog";
     std::string text_path = "robot.log";
     std::string dictionary_path = "robot.zdict";

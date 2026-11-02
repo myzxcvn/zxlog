@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <string>
 #include <vector>
 
 namespace zxlog::detail {
@@ -20,8 +21,20 @@ class OutputBackend;
 // Logger closes admission and waits for producers before stopping this runtime.
 class AsyncRuntime {
     struct ProducerQueue {
-        explicit ProducerQueue(std::size_t count) : slots(count) {}
-        std::vector<LogRecord> slots;
+        struct Slot {
+            std::uint64_t sequence = 0;
+            std::uint32_t length = 0;
+            Level level = Level::Info;
+        };
+        ProducerQueue(std::size_t count, std::size_t record_bytes)
+            : slots(count), payload(count * record_bytes), stride(record_bytes) {}
+        Slot &record(std::uint64_t index) noexcept { return slots[index % slots.size()]; }
+        std::uint8_t *data(std::uint64_t index) noexcept {
+            return payload.data() + (index % slots.size()) * stride;
+        }
+        std::vector<Slot> slots;
+        std::vector<std::uint8_t> payload;
+        const std::size_t stride;
         alignas(64) std::atomic<std::uint64_t> write{0};
         alignas(64) std::atomic<std::uint64_t> read{0};
         std::atomic<unsigned> state{0};  // 0 free, 1 active, 2 retiring
@@ -32,7 +45,9 @@ public:
     class Reservation {
     public:
         explicit operator bool() const noexcept { return queue_ != nullptr; }
-        LogRecord &record() const noexcept { return queue_->slots[tail_ % queue_->slots.size()]; }
+        ProducerQueue::Slot &record() const noexcept { return queue_->record(tail_); }
+        std::uint8_t *data() const noexcept { return queue_->data(tail_); }
+        std::size_t capacity() const noexcept { return queue_->stride; }
     private:
         friend class AsyncRuntime;
         Reservation(ProducerQueue *queue, std::uint64_t tail) : queue_(queue), tail_(tail) {}
@@ -40,7 +55,10 @@ public:
         std::uint64_t tail_;
     };
 
-    void prepare(unsigned max_producers, std::size_t slots);
+    bool prepare(unsigned max_producers, std::size_t slots, std::size_t record_bytes,
+                 std::size_t budget, std::string *error);
+    std::size_t queue_memory_bytes() const noexcept { return queue_memory_bytes_; }
+    std::size_t queue_payload_bytes() const noexcept { return queue_payload_bytes_; }
     void start(OutputBackend &output, Diagnostics &diagnostics);
     void stop();
     void release_queues() noexcept { queues_.clear(); }
@@ -85,6 +103,8 @@ private:
     std::mutex wake_mutex_;
     std::condition_variable wake_cv_;
     std::vector<std::shared_ptr<ProducerQueue>> queues_;
+    std::size_t queue_memory_bytes_ = 0;
+    std::size_t queue_payload_bytes_ = 0;
     std::atomic<bool> closing_{false};
     std::thread worker_;
 };

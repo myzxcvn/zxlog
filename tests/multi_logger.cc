@@ -576,6 +576,35 @@ void conflicts(const Fixture &f) {
             "replacement lost old log");
 }
 
+
+void resource_budget(const Fixture &f) {
+    auto opts = f.options("small_queue");
+    opts.max_producers = 2;
+    opts.per_thread_slots = 8;
+    opts.max_record_bytes = 128;
+    opts.max_queue_bytes = 2304; // 16 * (128 + sizeof(slot metadata)), 16*16
+    auto logger = f.create(opts);
+    const auto before = logger->stats();
+    require(before.queue_payload_bytes == 2048 && before.queue_memory_bytes <= opts.max_queue_bytes,
+            "producer queue storage not bounded");
+    ZX_LOG(logger, INFO, "small {}", 7);
+    ZX_LOG(logger, INFO, "large {}", std::string(500, 'x'));
+    flush(*logger);
+    require(logger->stats().record_too_large == 1, "oversized record not rejected");
+    report("small_queue", *logger);
+    logger->shutdown();
+    auto rejected = f.options("rejected_budget");
+    rejected.max_producers = 2;
+    rejected.per_thread_slots = 8;
+    rejected.max_record_bytes = 128;
+    rejected.max_queue_bytes = 2048; // payload alone; metadata must count
+    std::string error;
+    require(!zxlog::Logger::create(rejected, &error) &&
+            error == "SPSC queue memory budget exceeded", "insufficient budget accepted");
+    require(!fs::exists(rejected.binary_path) && !fs::exists(rejected.text_path),
+            "rejected memory budget created output");
+}
+
 void rotation(const Fixture &f) {
     auto options = f.options("rotate");
     options.max_file_bytes = 1800;
@@ -625,6 +654,8 @@ int main(int argc, char **argv) {
             conflicts(fixture);
         else if (scenario == "rotation")
             rotation(fixture);
+        else if (scenario == "resource_budget")
+            resource_budget(fixture);
         else
             return 2;
     } catch (const std::exception &ex) {
