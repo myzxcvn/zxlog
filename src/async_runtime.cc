@@ -55,15 +55,15 @@ void AsyncRuntime::stop() {
     wake();
     if (dispatcher_) {
         {
-            if (std::getenv("ZXLOG_TEST_TRACE")) std::fprintf(stderr,"[stop] %p waiting for drain\\n",static_cast<void*>(this));
+            if (std::getenv("ZXLOG_TEST_TRACE")) std::fprintf(stderr,"[stop] %p waiting for drain\n",static_cast<void*>(this));
             std::unique_lock<std::mutex> lock(drain_mutex_);
             drain_cv_.wait(lock, [this] { return drained_.load(std::memory_order_acquire); });
         }
-        if (std::getenv("ZXLOG_TEST_TRACE")) std::fprintf(stderr,"[stop] %p drained, detaching\\n",static_cast<void*>(this));
+        if (std::getenv("ZXLOG_TEST_TRACE")) std::fprintf(stderr,"[stop] %p drained, detaching\n",static_cast<void*>(this));
         // detach blocks until all in-flight callbacks complete, without
         // holding the registry lock during file I/O.
         dispatcher_->detach(registration_);
-        if (std::getenv("ZXLOG_TEST_TRACE")) std::fprintf(stderr,"[stop] %p detached\\n",static_cast<void*>(this));
+        if (std::getenv("ZXLOG_TEST_TRACE")) std::fprintf(stderr,"[stop] %p detached\n",static_cast<void*>(this));
         registration_.reset();
         dispatcher_.reset();
     } else if (worker_.joinable()) {
@@ -273,7 +273,7 @@ bool AsyncRuntime::process_one() noexcept {
     }
     if (closing_.load(std::memory_order_acquire) &&
         consumed_sequence_ == sequence_.load(std::memory_order_acquire)) {
-        if (std::getenv("ZXLOG_TEST_TRACE")) std::fprintf(stderr,"[worker] %p closing drained\\n",static_cast<void*>(this));
+        if (std::getenv("ZXLOG_TEST_TRACE")) std::fprintf(stderr,"[worker] %p closing drained\n",static_cast<void*>(this));
         (void)output.flush(false, diagnostics);
         drained_.store(true, std::memory_order_release);
         drain_cv_.notify_all();
