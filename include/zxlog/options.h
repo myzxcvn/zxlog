@@ -4,6 +4,7 @@
 #include "zxlog/identity.h"
 #include "zxlog/error.h"
 #include "zxlog/sink.h"
+#include "zxlog/dispatcher.h"
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -21,6 +22,7 @@ struct Options {
     std::size_t per_thread_slots = 32;  // SPSC capacity per producer, allocated at init
     std::size_t max_record_bytes = kMaxRecordSize;  // 32..1024, includes record header
     std::size_t max_queue_bytes = 8u << 20;  // cap for producer payload + slot metadata
+    std::shared_ptr<Dispatcher> dispatcher; // optional shared worker
     std::vector<std::shared_ptr<Sink>> extra_sinks; // optional worker-side outputs
     std::string binary_path = "robot.blog";
     std::string text_path = "robot.log";

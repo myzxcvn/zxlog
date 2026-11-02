@@ -112,7 +112,7 @@ bool Logger::initialize(const Options &options, std::string *error) {
             return false;
         }
         diagnostics_.configure(options);
-        runtime_.start(output_, diagnostics_);
+        runtime_.start(output_, diagnostics_, options.dispatcher);
         // Publish only after all resources and the consumer exist.
         admission_.publish(options.level);
         return true;

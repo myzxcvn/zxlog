@@ -26,19 +26,46 @@ bool AsyncRuntime::prepare(unsigned max_producers, std::size_t slots, std::size_
     return true;
 }
 
-void AsyncRuntime::start(OutputBackend &output, Diagnostics &diagnostics) {
-    closing_ = false;
-    worker_ = std::thread([this, &output, &diagnostics] { consume(output, diagnostics); });
+void AsyncRuntime::start(OutputBackend &output, Diagnostics &diagnostics,
+                         std::shared_ptr<Dispatcher> shared_dispatcher) {
+    output_ = &output;
+    diagnostics_ = &diagnostics;
+    closing_.store(false, std::memory_order_release);
+    drained_.store(false, std::memory_order_release);
+    const auto now = std::chrono::steady_clock::now();
+    next_flush_ = now + output.policy().flush_interval;
+    next_sync_ = now + output.policy().sync_interval;
+    if (shared_dispatcher) {
+        auto registration = shared_dispatcher->attach(this);
+        dispatcher_ = std::move(shared_dispatcher);
+        registration_ = std::move(registration);
+    } else {
+        worker_ = std::thread([this] { consume(); });
+    }
 }
 
 void AsyncRuntime::stop() {
     // Admission is closed and all producers have left before this point.
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
-        closing_ = true;
+        closing_.store(true, std::memory_order_release);
     }
-    wake_cv_.notify_all();
-    if (worker_.joinable()) worker_.join();
+    wake();
+    if (dispatcher_) {
+        {
+            std::unique_lock<std::mutex> lock(drain_mutex_);
+            drain_cv_.wait(lock, [this] { return drained_.load(std::memory_order_acquire); });
+        }
+        // detach blocks until all in-flight callbacks complete, without
+        // holding the registry lock during file I/O.
+        dispatcher_->detach(registration_);
+        registration_.reset();
+        dispatcher_.reset();
+    } else if (worker_.joinable()) {
+        worker_.join();
+    }
+    output_ = nullptr;
+    diagnostics_ = nullptr;
 }
 
 AsyncRuntime::ProducerQueue *AsyncRuntime::current_producer(std::uint64_t instance_id, Diagnostics &diagnostics) noexcept {
@@ -119,7 +146,7 @@ bool AsyncRuntime::enqueue_control(Control control, const AdmissionState &admiss
 
     controls_.back().sequence = sequence_.fetch_add(1, std::memory_order_acq_rel);
     lock.unlock();
-    wake_cv_.notify_one();
+    wake();
     return true;
 }
 
@@ -195,70 +222,73 @@ bool AsyncRuntime::pop_event(LogRecord &scratch, Control &ctrl, bool &is_control
     return false;
 }
 
-void AsyncRuntime::consume(OutputBackend &output, Diagnostics &diagnostics) {
-    LogRecord scratch;
+bool AsyncRuntime::process_one() noexcept {
+    if (drained_.load(std::memory_order_acquire)) return false;
+    auto &output = *output_;
+    auto &diagnostics = *diagnostics_;
     const auto &policy = output.policy();
-    Control control;
-    bool is_control = false;
     using Clock = std::chrono::steady_clock;
-    auto next_flush = Clock::now() + policy.flush_interval;
-    auto next_sync = Clock::now() + policy.sync_interval;
-    for (;;) {
-        const auto now = Clock::now();
-        if (policy.sync_interval.count() > 0 && now >= next_sync) {
-            if (output.needs_sync()) {
-                (void)output.flush(true, diagnostics);
-            }
-            next_sync = now + policy.sync_interval;
-        }
-        if (policy.flush_interval.count() > 0 && now >= next_flush) {
-            if (output.has_pending()) {
-                (void)output.flush(false, diagnostics);
-            }
-            next_flush = now + policy.flush_interval;
-        }
-        if (pop_event(scratch, control, is_control)) {
-            ++consumed_sequence_;
-            if (!is_control) {
-                try {
-                    output.write(scratch, diagnostics);
-                    if (scratch.level >= policy.sync_on_level && policy.sync_on_level != Level::Off) {
-                        (void)output.flush(true, diagnostics);
-                    } else if (scratch.level >= policy.flush_on_level && policy.flush_on_level != Level::Off) {
-                        (void)output.flush(false, diagnostics);
-                    }
-                } catch (...) {
-                    diagnostics.report(ErrorCode::Internal, "write event exception");
-                }
-            } else if (control.kind == ControlKind::ModeChange) {
-                // Ensure old pending bytes are not interleaved with new output mode.
-                output.set_mode(control.mode, diagnostics);
-            } else {
-                const bool ok =
-                    output.flush(control.durable, diagnostics) && !diagnostics.has_errors();
-                if (control.ack) {
-                    control.ack->set_value(ok);
-                }
-            }
-
-            control = Control{};
-            continue;
-        }
-
-        if (closing_ && consumed_sequence_ == sequence_.load(std::memory_order_acquire)) {
-            break;
-        }
-
-        std::unique_lock<std::mutex> lock(wake_mutex_);
-        // Bounded polling avoids the lost-notification window without a shared
-        // mutex in the hot producer path. Idle wake is at most ~5 ms.
-        auto deadline = Clock::now() + std::chrono::milliseconds(5);
-        if (policy.flush_interval.count() > 0) deadline = std::min(deadline, next_flush);
-        if (policy.sync_interval.count() > 0) deadline = std::min(deadline, next_sync);
-        wake_cv_.wait_until(lock, deadline);
+    const auto now = Clock::now();
+    if (policy.sync_interval.count() > 0 && now >= next_sync_) {
+        if (output.needs_sync()) (void)output.flush(true, diagnostics);
+        next_sync_ = now + policy.sync_interval;
+    }
+    if (policy.flush_interval.count() > 0 && now >= next_flush_) {
+        if (output.has_pending()) (void)output.flush(false, diagnostics);
+        next_flush_ = now + policy.flush_interval;
     }
 
-    (void)output.flush(false, diagnostics);
+    LogRecord scratch;
+    Control control;
+    bool is_control = false;
+    if (pop_event(scratch, control, is_control)) {
+        ++consumed_sequence_;
+        try {
+            if (!is_control) {
+                output.write(scratch, diagnostics);
+                if (scratch.level >= policy.sync_on_level && policy.sync_on_level != Level::Off) {
+                    (void)output.flush(true, diagnostics);
+                } else if (scratch.level >= policy.flush_on_level && policy.flush_on_level != Level::Off) {
+                    (void)output.flush(false, diagnostics);
+                }
+            } else if (control.kind == ControlKind::ModeChange) {
+                output.set_mode(control.mode, diagnostics);
+            } else {
+                const bool ok = output.flush(control.durable, diagnostics) && !diagnostics.has_errors();
+                if (control.ack) control.ack->set_value(ok);
+            }
+        } catch (...) {
+            diagnostics.report(ErrorCode::Internal, "dispatch exception");
+            if (is_control && control.ack) {
+                try { control.ack->set_value(false); } catch (...) {}
+            }
+        }
+        return true;
+    }
+    if (closing_.load(std::memory_order_acquire) &&
+        consumed_sequence_ == sequence_.load(std::memory_order_acquire)) {
+        (void)output.flush(false, diagnostics);
+        drained_.store(true, std::memory_order_release);
+        drain_cv_.notify_all();
+        return true;
+    }
+    return false;
+}
+
+void AsyncRuntime::consume() noexcept {
+    const auto &policy = output_->policy();
+    using Clock = std::chrono::steady_clock;
+    for (;;) {
+        if (process_one()) {
+            if (drained_.load(std::memory_order_acquire)) break;
+            continue;
+        }
+        std::unique_lock<std::mutex> lock(wake_mutex_);
+        auto deadline = Clock::now() + std::chrono::milliseconds(5);
+        if (policy.flush_interval.count() > 0) deadline = std::min(deadline, next_flush_);
+        if (policy.sync_interval.count() > 0) deadline = std::min(deadline, next_sync_);
+        wake_cv_.wait_until(lock, deadline);
+    }
 }
 
 }  // namespace zxlog::detail

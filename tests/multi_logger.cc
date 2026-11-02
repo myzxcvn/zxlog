@@ -596,6 +596,33 @@ public:
 private:
     zxlog::OutputMode mode_;
 };
+
+void shared_dispatcher(const Fixture &f) {
+    auto dispatcher = std::make_shared<zxlog::Dispatcher>();
+    auto aopts = f.options("dispatch_a");
+    auto bopts = f.options("dispatch_b");
+    aopts.dispatcher = dispatcher;
+    bopts.dispatcher = dispatcher;
+    auto a = f.create(aopts);
+    auto b = f.create(bopts);
+    require(dispatcher->logger_count() == 2, "shared dispatcher registration failed");
+    for (int i = 0; i != 100; ++i) {
+        ZX_LOG(a, INFO, "shared a {}", i);
+        ZX_LOG(b, INFO, "shared b {}", i);
+    }
+    flush(*a);
+    flush(*b);
+    a->shutdown();
+    require(dispatcher->logger_count() == 1, "unregistered Logger remains");
+    ZX_LOG(b, INFO, "shared after close");
+    flush(*b);
+    require(a->stats().dropped == 0 && b->stats().dropped == 0, "shared dispatcher dropped events");
+    report("dispatch_a", *a);
+    report("dispatch_b", *b);
+    b->shutdown();
+    require(dispatcher->logger_count() == 0, "shared dispatcher leaked registration");
+}
+
 void custom_sink(const Fixture &f) {
     auto opts = f.options("with_sink");
     auto capture = std::make_shared<CaptureSink>(opts.initial_mode);
@@ -698,6 +725,8 @@ int main(int argc, char **argv) {
             resource_budget(fixture);
         else if (scenario == "custom_sink")
             custom_sink(fixture);
+        else if (scenario == "shared_dispatcher")
+            shared_dispatcher(fixture);
         else
             return 2;
     } catch (const std::exception &ex) {

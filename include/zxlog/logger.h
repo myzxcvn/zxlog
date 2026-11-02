@@ -83,8 +83,8 @@ public:
         // Linearization point for cross-producer ordering and mode barriers.
         runtime_.publish(reservation);
         diagnostics_.accepted();
-        finish();
         runtime_.wake();
+        finish();
     }
 
 private:

@@ -3,8 +3,10 @@
 #include "zxlog/detail/admission_state.h"
 #include "zxlog/detail/diagnostics.h"
 #include "zxlog/detail/log_record.h"
+#include "zxlog/dispatcher.h"
 #include <atomic>
 #include <condition_variable>
+#include <chrono>
 #include <cstddef>
 #include <deque>
 #include <future>
@@ -20,6 +22,7 @@ class OutputBackend;
 // Owns producer registrations, ordering, control barriers and the consumer.
 // Logger closes admission and waits for producers before stopping this runtime.
 class AsyncRuntime {
+    friend class ::zxlog::Dispatcher;
     struct ProducerQueue {
         struct Slot {
             std::uint64_t sequence = 0;
@@ -59,11 +62,15 @@ public:
                  std::size_t budget, std::string *error);
     std::size_t queue_memory_bytes() const noexcept { return queue_memory_bytes_; }
     std::size_t queue_payload_bytes() const noexcept { return queue_payload_bytes_; }
-    void start(OutputBackend &output, Diagnostics &diagnostics);
+    void start(OutputBackend &output, Diagnostics &diagnostics,
+               std::shared_ptr<Dispatcher> shared_dispatcher = {});
     void stop();
     void release_queues() noexcept { queues_.clear(); }
     void notify_control_waiters() noexcept { control_space_cv_.notify_all(); }
-    void wake() noexcept { wake_cv_.notify_one(); }
+    void wake() noexcept {
+        if (dispatcher_) dispatcher_->notify();
+        else wake_cv_.notify_one();
+    }
     Reservation reserve(std::uint64_t instance_id, Diagnostics &diagnostics) noexcept {
         auto *queue = current_producer(instance_id, diagnostics);
         if (!queue) return {nullptr, 0};
@@ -94,7 +101,8 @@ private:
     ProducerQueue *current_producer(std::uint64_t instance_id, Diagnostics &diagnostics) noexcept;
     bool enqueue_control(Control control, const AdmissionState &admission);
     bool pop_event(LogRecord &scratch, Control &control, bool &is_control);
-    void consume(OutputBackend &output, Diagnostics &diagnostics);
+    void consume() noexcept;
+    bool process_one() noexcept; // exactly one concurrent consumer
     std::atomic<std::uint64_t> sequence_{0};
     std::uint64_t consumed_sequence_ = 0;  // consumer only
     std::mutex control_mutex_;
@@ -106,6 +114,14 @@ private:
     std::size_t queue_memory_bytes_ = 0;
     std::size_t queue_payload_bytes_ = 0;
     std::atomic<bool> closing_{false};
+    std::atomic<bool> drained_{false};
+    std::mutex drain_mutex_;
+    std::condition_variable drain_cv_;
+    OutputBackend *output_ = nullptr;
+    Diagnostics *diagnostics_ = nullptr;
+    std::chrono::steady_clock::time_point next_flush_{}, next_sync_{};
+    std::shared_ptr<Dispatcher> dispatcher_;
+    std::shared_ptr<Dispatcher::Entry> registration_;
     std::thread worker_;
 };
 
