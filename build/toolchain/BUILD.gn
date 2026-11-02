@@ -1,25 +1,25 @@
 toolchain("default") {
   tool("cc") {
     depfile = "{{output}}.d"
-    command = "gcc -MMD -MF {{output}}.d {{defines}} {{include_dirs}} {{cflags}} {{cflags_c}} -c {{source}} -o {{output}}"
+    command = "$zxlog_cc -MMD -MF {{output}}.d {{defines}} {{include_dirs}} {{cflags}} {{cflags_c}} -c {{source}} -o {{output}}"
     depsformat = "gcc"
     outputs = [ "{{source_out_dir}}/{{target_output_name}}.{{source_name_part}}.o" ]
     description = "CC {{source}}"
   }
   tool("cxx") {
     depfile = "{{output}}.d"
-    command = "g++ -MMD -MF {{output}}.d {{defines}} {{include_dirs}} {{cflags}} {{cflags_cc}} -c {{source}} -o {{output}}"
+    command = "$zxlog_cxx -MMD -MF {{output}}.d {{defines}} {{include_dirs}} {{cflags}} {{cflags_cc}} -c {{source}} -o {{output}}"
     depsformat = "gcc"
     outputs = [ "{{source_out_dir}}/{{target_output_name}}.{{source_name_part}}.o" ]
     description = "CXX {{source}}"
   }
   tool("alink") {
-    command = "rm -f {{output}} && ar rcs {{output}} {{inputs}}"
+    command = "rm -f {{output}} && $zxlog_archiver rcs {{output}} {{inputs}}"
     outputs = [ "{{target_out_dir}}/lib{{target_output_name}}.a" ]
     description = "AR {{output}}"
   }
   tool("link") {
-    command = "g++ {{ldflags}} -o {{output}} {{inputs}} {{libs}}"
+    command = "$zxlog_linker {{ldflags}} -o {{output}} {{inputs}} {{libs}}"
     outputs = [ "{{root_out_dir}}/{{target_output_name}}" ]
     description = "LINK {{output}}"
   }

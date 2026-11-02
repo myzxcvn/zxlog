@@ -1,3 +1,5 @@
+> **v0.7 development branch**: bounded queue memory, v3 ULEB128/ZigZag codec, pluggable Sinks and an optional shared Dispatcher are documented in [v0.7 upgrade notes](docs/v0.7-upgrade.md). This README preserves the v0.4 baseline details where applicable.
+
 # zxlog v0.4.0
 
 A C++17 structured event logger for Linux/ELF with a uniform `ZX_LOG(INFO, "{}", arg)` front-end, build-time LogSite dictionaries, bounded per-thread SPSC rings, and selectable TEXT, BINARY or RUNTIME backends. Binary records use a CRC32-protected v2 wire protocol. Supports batched file output, quotas/rotation, `fdatasync`, startup tail repair, and offline recovery using Python or a matching C++ {fmt}-based decoder. The text backend uses MIT-licensed {fmt} 12.1.0 headers bundled in `third_party/fmt`.

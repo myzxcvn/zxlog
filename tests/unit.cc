@@ -1,4 +1,5 @@
 #include "zxlog/site.h"
+#include "zxlog/zxlog.h"
 #include "zxlog/crc32.h"
 #include <array>
 #include <cstdint>
@@ -16,6 +17,15 @@ constexpr auto kMeta = zxlog::detail::make_site<std::uint32_t>(
 static_assert(kMeta.arg_count == 1 && kMeta.types[0] == 6);
 static_assert(kMeta.total_bytes == sizeof(kMeta));
 
+#if ZXLOG_ACTIVE_LEVEL > 2
+struct NotSerializable {};
+void removed_site() {
+    // Both forms must completely eliminate inactive arguments/ELF metadata.
+    ZX_LOG(INFO, "this must not compile or be retained {}", NotSerializable{});
+    ZX_LOG((zxlog::Logger::instance()), INFO, "inactive custom {}", NotSerializable{});
+}
+#endif
+
 int main() {
     const std::uint8_t abc[]{'1', '2', '3', '4', '5', '6', '7', '8', '9'};
     if (zxlog::detail::crc32(abc, 9) != 0xcbf43926u) return 2;
@@ -24,20 +34,31 @@ int main() {
     if (!zxlog::detail::write_value(cursor, bytes + sizeof(bytes), std::int32_t{-7})) return 3;
     if (!zxlog::detail::write_value(cursor, bytes + sizeof(bytes), std::uint64_t{0x123456789abcdef0ull})) return 3;
     if (!zxlog::detail::write_value(cursor, bytes + sizeof(bytes), std::string_view{"test"})) return 3;
-    if (cursor != bytes + 4 + 8 + 4 + 4 ||
-        zxlog::detail::read_u32(bytes) != 0xfffffff9u ||
-        zxlog::detail::read_u64(bytes + 4) != 0x123456789abcdef0ull ||
-        zxlog::detail::read_u32(bytes + 12) != 4u) return 1;
+    if (cursor != bytes + 1 + 9 + 1 + 4) return 1;
+    const auto *start = bytes;
+    std::uint64_t a = 0, b = 0, c = 0;
+    if (!zxlog::detail::read_varint(start, cursor, a) || a != 13 ||
+        !zxlog::detail::read_varint(start, cursor, b) || b != 0x123456789abcdef0ull ||
+        !zxlog::detail::read_varint(start, cursor, c) || c != 4 ||
+        std::string(reinterpret_cast<const char*>(start), 4) != "test") return 1;
     // Rejected values must leave the cursor and destination untouched.
-    for (std::size_t capacity = 0; capacity < 8; ++capacity) {
+    for (std::size_t capacity = 0; capacity < 5; ++capacity) {
         std::array<std::uint8_t, 10> guarded;
         guarded.fill(0xa5);
         auto *p = guarded.data() + 1;
         if (zxlog::detail::write_value(p, p + capacity, std::string_view{"test"}) ||
             p != guarded.data() + 1) return 4;
         for (auto byte : guarded) if (byte != 0xa5) return 5;
-        if (zxlog::detail::write_value(p, p + capacity, std::uint64_t{42})) return 6;
+        if (zxlog::detail::write_value(p, p + capacity, std::uint64_t{0xffffffffffffffffull})) return 6;
         for (auto byte : guarded) if (byte != 0xa5) return 7;
+    }
+    for (std::size_t capacity = 5; capacity < 10; ++capacity) {
+        std::array<std::uint8_t, 12> guard;
+        guard.fill(0xa5);
+        auto *p = guard.data() + 1;
+        if (zxlog::detail::write_value(p, p + capacity, std::uint64_t{0xffffffffffffffffull}))
+            return 8;
+        for (auto byte : guard) if (byte != 0xa5) return 9;
     }
     std::cout << "zxlog unit tests passed\n";
 }

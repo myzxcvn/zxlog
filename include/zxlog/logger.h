@@ -1,5 +1,6 @@
 #pragma once
 
+#include "zxlog/config.h"
 #include "zxlog/site.h"
 #include "zxlog/crc32.h"
 #include "zxlog/options.h"
@@ -62,9 +63,9 @@ public:
             return;
         }
         auto &slot = reservation.record();
-        std::uint8_t *data = slot.bytes.data();
+        std::uint8_t *data = reservation.data();
         std::uint8_t *p = data + kRecordHeaderSize;
-        if (!(detail::write_value(p, data + slot.bytes.size(), args) && ...)) {
+        if (!(detail::write_value(p, data + reservation.capacity(), args) && ...)) {
             diagnostics_.drop(detail::DropReason::RecordTooLarge);
             // An incomplete slot is never published and consumes no sequence.
             finish();
@@ -83,8 +84,8 @@ public:
         // Linearization point for cross-producer ordering and mode barriers.
         runtime_.publish(reservation);
         diagnostics_.accepted();
-        finish();
         runtime_.wake();
+        finish();
     }
 
 private:
@@ -153,10 +154,41 @@ inline Logger *logger_ptr(const std::shared_ptr<Logger> &logger) noexcept { retu
 #define ZXLOG_DETAIL_TAG_WARN ZXLOG_DETAIL_PROBE()
 #define ZXLOG_DETAIL_TAG_ERROR ZXLOG_DETAIL_PROBE()
 #define ZXLOG_DETAIL_TAG_CRITICAL ZXLOG_DETAIL_PROBE()
+
+#if ZXLOG_ACTIVE_LEVEL <= 0
+#define ZXLOG_DETAIL_ACTIVE_TRACE(target_, ...) ZXLOG_DETAIL(target_, ZXLOG_DETAIL_LEVEL_TRACE, __VA_ARGS__)
+#else
+#define ZXLOG_DETAIL_ACTIVE_TRACE(target_, ...) do {} while (false)
+#endif
+#if ZXLOG_ACTIVE_LEVEL <= 1
+#define ZXLOG_DETAIL_ACTIVE_DEBUG(target_, ...) ZXLOG_DETAIL(target_, ZXLOG_DETAIL_LEVEL_DEBUG, __VA_ARGS__)
+#else
+#define ZXLOG_DETAIL_ACTIVE_DEBUG(target_, ...) do {} while (false)
+#endif
+#if ZXLOG_ACTIVE_LEVEL <= 2
+#define ZXLOG_DETAIL_ACTIVE_INFO(target_, ...) ZXLOG_DETAIL(target_, ZXLOG_DETAIL_LEVEL_INFO, __VA_ARGS__)
+#else
+#define ZXLOG_DETAIL_ACTIVE_INFO(target_, ...) do {} while (false)
+#endif
+#if ZXLOG_ACTIVE_LEVEL <= 3
+#define ZXLOG_DETAIL_ACTIVE_WARN(target_, ...) ZXLOG_DETAIL(target_, ZXLOG_DETAIL_LEVEL_WARN, __VA_ARGS__)
+#else
+#define ZXLOG_DETAIL_ACTIVE_WARN(target_, ...) do {} while (false)
+#endif
+#if ZXLOG_ACTIVE_LEVEL <= 4
+#define ZXLOG_DETAIL_ACTIVE_ERROR(target_, ...) ZXLOG_DETAIL(target_, ZXLOG_DETAIL_LEVEL_ERROR, __VA_ARGS__)
+#else
+#define ZXLOG_DETAIL_ACTIVE_ERROR(target_, ...) do {} while (false)
+#endif
+#if ZXLOG_ACTIVE_LEVEL <= 5
+#define ZXLOG_DETAIL_ACTIVE_CRITICAL(target_, ...) ZXLOG_DETAIL(target_, ZXLOG_DETAIL_LEVEL_CRITICAL, __VA_ARGS__)
+#else
+#define ZXLOG_DETAIL_ACTIVE_CRITICAL(target_, ...) do {} while (false)
+#endif
 #define ZXLOG_DETAIL_GLOBAL(level_, ...) \
-    ZXLOG_DETAIL(::zxlog::Logger::instance(), ZXLOG_DETAIL_LEVEL_##level_, __VA_ARGS__)
+    ZXLOG_DETAIL_CAT(ZXLOG_DETAIL_ACTIVE_, level_)(::zxlog::Logger::instance(), __VA_ARGS__)
 #define ZXLOG_DETAIL_EXPLICIT(target_, level_, ...) \
-    ZXLOG_DETAIL(target_, ZXLOG_DETAIL_LEVEL_##level_, __VA_ARGS__)
+    ZXLOG_DETAIL_CAT(ZXLOG_DETAIL_ACTIVE_, level_)(target_, __VA_ARGS__)
 #define ZXLOG_DETAIL_ROUTE_1 ZXLOG_DETAIL_GLOBAL
 #define ZXLOG_DETAIL_ROUTE_0 ZXLOG_DETAIL_EXPLICIT
 #define ZXLOG_DETAIL_PAREN_1(first_, ...) ZXLOG_DETAIL_EXPLICIT(first_, __VA_ARGS__)

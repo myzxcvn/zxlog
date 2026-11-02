@@ -14,7 +14,10 @@ import extract_dictionary
 
 
 def run(*args):
-    result = subprocess.run(args, text=True, capture_output=True, timeout=60)
+    try:
+        result = subprocess.run(args, text=True, capture_output=True, timeout=60)
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError(f'{args} timed out: stdout={exc.stdout!r}; stderr={exc.stderr!r}') from exc
     if result.returncode or result.stderr:
         raise AssertionError(f'{args}: {result.returncode}\n{result.stdout}\n{result.stderr}')
     return result.stdout
@@ -68,7 +71,7 @@ def main(a):
         return result
 
     roots = {}
-    for scenario in ('isolation', 'diagnostics', 'periodic', 'text_limits', 'encoding', 'churn', 'capacity', 'thread_churn', 'close', 'conflicts', 'rotation'):
+    for scenario in ('isolation', 'diagnostics', 'periodic', 'text_limits', 'encoding', 'churn', 'capacity', 'thread_churn', 'close', 'conflicts', 'rotation', 'resource_budget', 'custom_sink', 'periodic_sink', 'shared_dispatcher', 'failing_sink'):
         root = cases / scenario
         root.mkdir()
         roots[scenario] = root
@@ -82,7 +85,7 @@ def main(a):
             else:
                 assert len(data) == accepted, (scenario, name, accepted, len(data))
             assert not any('filtered' in message for _, message in data)
-            if scenario not in ('capacity', 'close', 'encoding'):
+            if scenario not in ('capacity', 'close', 'encoding', 'resource_budget'):
                 assert dropped == 0, (scenario, output)
 
     root = roots['isolation']
@@ -136,6 +139,13 @@ def main(a):
     assert records(roots['conflicts'], 'copy_failure') == [('INFO', 'after copy failure')]
     for name, offset in (('a', 0), ('b', 100)):
         assert records(roots['thread_churn'], name) == [('INFO', f'custom {offset + i}') for i in range(40)]
+    assert records(roots['resource_budget'], 'small_queue') == [('INFO', 'small 7')]
+    assert records(roots['custom_sink'], 'with_sink') == [('INFO', 'sink 19')]
+    assert records(roots['shared_dispatcher'], 'dispatch_a') == [
+        ('INFO', f'shared a {i}') for i in range(100)]
+    assert records(roots['shared_dispatcher'], 'dispatch_b') == [
+        *(( 'INFO', f'shared b {i}') for i in range(100)),
+        ('INFO', 'shared after close')]
     root = roots['rotation']
     suffix = '.log' if a.mode == 'TEXT' else '.blog'
     files = segments(root, 'rotate', suffix)

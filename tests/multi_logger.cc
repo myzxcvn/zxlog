@@ -576,6 +576,194 @@ void conflicts(const Fixture &f) {
             "replacement lost old log");
 }
 
+
+
+class CaptureSink final : public zxlog::Sink {
+public:
+    explicit CaptureSink(zxlog::OutputMode mode) : mode_(mode) {}
+    zxlog::OutputMode mode() const noexcept override { return mode_; }
+    bool append(const std::uint8_t *bytes, std::size_t size) noexcept override {
+        try {
+            records.emplace_back(reinterpret_cast<const char *>(bytes), size);
+            return true;
+        } catch (...) { return false; }
+    }
+    bool flush(bool) noexcept override { ++flushes; return true; }
+    void close() noexcept override { ++closes; }
+    std::vector<std::string> records;
+    unsigned flushes = 0;
+    unsigned closes = 0;
+private:
+    zxlog::OutputMode mode_;
+};
+
+void shared_dispatcher(const Fixture &f) {
+    auto dispatcher = std::make_shared<zxlog::Dispatcher>();
+    auto aopts = f.options("dispatch_a");
+    auto bopts = f.options("dispatch_b");
+    aopts.dispatcher = dispatcher;
+    bopts.dispatcher = dispatcher;
+    auto a = f.create(aopts);
+    auto b = f.create(bopts);
+    require(dispatcher->logger_count() == 2, "shared dispatcher registration failed");
+    for (int i = 0; i != 100; ++i) {
+        ZX_LOG(a, INFO, "shared a {}", i);
+        ZX_LOG(b, INFO, "shared b {}", i);
+        if (i % 16 == 15) { flush(*a); flush(*b); }
+    }
+    flush(*a);
+    flush(*b);
+    a->shutdown();
+    require(dispatcher->logger_count() == 1, "unregistered Logger remains");
+    ZX_LOG(b, INFO, "shared after close");
+    flush(*b);
+    require(a->stats().dropped == 0 && b->stats().dropped == 0, "shared dispatcher dropped events");
+    report("dispatch_a", *a);
+    report("dispatch_b", *b);
+    b->shutdown();
+    require(dispatcher->logger_count() == 0, "shared dispatcher leaked registration");
+    // Regression: repeated drain/shutdown must never lose CV notifications.
+    // Keep the same Dispatcher active across multiple Logger lifetimes.
+    for (int cycle = 0; cycle < 24; ++cycle) {
+        auto opts = f.options("dispatch_cycle_" + std::to_string(cycle));
+        opts.dispatcher = dispatcher;
+        auto one = f.create(opts);
+        ZX_LOG(one, INFO, "shared cycle {}", cycle);
+        flush(*one);
+        one->shutdown();
+        require(dispatcher->logger_count() == 0, "cycle leaked Dispatcher entry");
+        require(one->stats().dropped == 0, "cycle unexpectedly dropped event");
+    }
+}
+
+
+class RejectSink final : public zxlog::Sink {
+public:
+    explicit RejectSink(zxlog::OutputMode mode) : mode_(mode) {}
+    zxlog::OutputMode mode() const noexcept override { return mode_; }
+    bool append(const std::uint8_t *, std::size_t) noexcept override { return false; }
+    bool flush(bool) noexcept override { return false; }
+private:
+    zxlog::OutputMode mode_;
+};
+
+void failing_sink(const Fixture &f) {
+    auto opts = f.options("failing_sink");
+    opts.flush_interval = std::chrono::milliseconds(0);
+    opts.extra_sinks.push_back(std::make_shared<RejectSink>(opts.initial_mode));
+    auto logger = f.create(opts);
+    ZX_LOG(logger, ERROR, "custom Sink failure {}", 42);
+    require(!logger->flush(false), "failed custom Sink unexpectedly passed flush");
+    require(logger->stats().write_errors >= 2 && logger->stats().sync_errors == 0 &&
+            logger->last_error().code == zxlog::ErrorCode::Write,
+            "non-durable Sink flush failure not counted as a write error");
+    require(!logger->flush(true), "failed custom Sink unexpectedly passed durability");
+    const auto diagnostics = logger->stats();
+    require(logger->output_failed() && diagnostics.write_errors >= 1 &&
+            diagnostics.io_errors >= 3 && diagnostics.sync_errors >= 1 &&
+            logger->last_error().code == zxlog::ErrorCode::Sync,
+            "custom Sink failure not reflected in Diagnostics");
+    logger->shutdown();
+}
+
+void custom_sink(const Fixture &f) {
+    auto opts = f.options("with_sink");
+    auto capture = std::make_shared<CaptureSink>(opts.initial_mode);
+    opts.extra_sinks.push_back(capture);
+    auto logger = f.create(opts);
+    ZX_LOG(logger, INFO, "sink {}", 19);
+    flush(*logger);
+    require(capture->records.size() == 1 && capture->flushes > 0, "custom Sink failed to receive event");
+    if (opts.initial_mode == zxlog::OutputMode::Text) {
+        require(capture->records[0].find("sink 19") != std::string::npos, "text Sink got wrong payload");
+    } else {
+        const auto *p = reinterpret_cast<const std::uint8_t*>(capture->records[0].data());
+        require(capture->records[0].size() >= zxlog::kRecordHeaderSize &&
+                zxlog::detail::read_u32(p) == capture->records[0].size(),
+                "binary Sink did not receive a complete event");
+    }
+    report("with_sink", *logger);
+    logger->shutdown();
+    logger->shutdown();
+    logger.reset();
+    require(capture->closes == 1, "custom Sink must close exactly once");
+}
+
+class BufferedSink final : public zxlog::Sink {
+public:
+    explicit BufferedSink(zxlog::OutputMode mode) : mode_(mode) {}
+    zxlog::OutputMode mode() const noexcept override { return mode_; }
+    bool append(const std::uint8_t *, std::size_t) noexcept override {
+        pending_ = unsynced_ = true;
+        return true;
+    }
+    bool flush(bool durable) noexcept override {
+        if (pending_) flushed.store(true, std::memory_order_release);
+        if (durable && unsynced_) synced.store(true, std::memory_order_release);
+        pending_ = false;
+        if (durable) unsynced_ = false;
+        return true;
+    }
+    std::atomic<bool> flushed{false}, synced{false};
+private:
+    zxlog::OutputMode mode_;
+    bool pending_ = false, unsynced_ = false; // consumer only
+};
+
+void periodic_sink(const Fixture &f) {
+    for (bool shared : {false, true}) {
+        auto opts = f.options(shared ? "periodic_shared_sink" : "periodic_sink");
+        // The primary file writes and syncs each record during append. Only
+        // the additional Sink has outstanding work for the interval timers.
+        opts.io_batch_bytes = 1;
+        opts.sync_every_records = 1;
+        opts.flush_interval = std::chrono::milliseconds(10);
+        opts.sync_interval = std::chrono::milliseconds(20);
+        if (shared) opts.dispatcher = std::make_shared<zxlog::Dispatcher>();
+        auto sink = std::make_shared<BufferedSink>(opts.initial_mode);
+        opts.extra_sinks.push_back(sink);
+        auto logger = f.create(opts);
+        ZX_LOG(logger, INFO, "periodic additional Sink");
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!sink->synced.load(std::memory_order_acquire) &&
+               std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        require(sink->flushed.load(std::memory_order_acquire) &&
+                sink->synced.load(std::memory_order_acquire),
+                "additional Sink missed periodic flush/sync with an empty primary buffer");
+        logger->shutdown();
+        report(shared ? "periodic_shared_sink" : "periodic_sink", *logger);
+    }
+}
+
+void resource_budget(const Fixture &f) {
+    auto opts = f.options("small_queue");
+    opts.max_producers = 2;
+    opts.per_thread_slots = 8;
+    opts.max_record_bytes = 128;
+    opts.max_queue_bytes = 2304; // 16 * (128 + sizeof(slot metadata)), 16*16
+    auto logger = f.create(opts);
+    const auto before = logger->stats();
+    require(before.queue_payload_bytes == 2048 && before.queue_memory_bytes <= opts.max_queue_bytes,
+            "producer queue storage not bounded");
+    ZX_LOG(logger, INFO, "small {}", 7);
+    ZX_LOG(logger, INFO, "large {}", std::string(500, 'x'));
+    flush(*logger);
+    require(logger->stats().record_too_large == 1, "oversized record not rejected");
+    report("small_queue", *logger);
+    logger->shutdown();
+    auto rejected = f.options("rejected_budget");
+    rejected.max_producers = 2;
+    rejected.per_thread_slots = 8;
+    rejected.max_record_bytes = 128;
+    rejected.max_queue_bytes = 2048; // payload alone; metadata must count
+    std::string error;
+    require(!zxlog::Logger::create(rejected, &error) &&
+            error == "SPSC queue memory budget exceeded", "insufficient budget accepted");
+    require(!fs::exists(rejected.binary_path) && !fs::exists(rejected.text_path),
+            "rejected memory budget created output");
+}
+
 void rotation(const Fixture &f) {
     auto options = f.options("rotate");
     options.max_file_bytes = 1800;
@@ -625,6 +813,16 @@ int main(int argc, char **argv) {
             conflicts(fixture);
         else if (scenario == "rotation")
             rotation(fixture);
+        else if (scenario == "resource_budget")
+            resource_budget(fixture);
+        else if (scenario == "custom_sink")
+            custom_sink(fixture);
+        else if (scenario == "periodic_sink")
+            periodic_sink(fixture);
+        else if (scenario == "shared_dispatcher")
+            shared_dispatcher(fixture);
+        else if (scenario == "failing_sink")
+            failing_sink(fixture);
         else
             return 2;
     } catch (const std::exception &ex) {

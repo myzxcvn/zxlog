@@ -42,6 +42,17 @@ def do_test(a):
     dec = decoder_module()
     build_id, entries = dec.load_dictionary(a.dict)
     assert len(entries) >= 19, f'missing log sites: {len(entries)}'
+    # Verify legacy fixed-width payload decoding and v3 canonical ULEB128.
+    assert dec.decode_args(struct.pack('<iI', -7, 42), [5, 6]) == [-7, 42]
+    assert dec.decode_args(b'\r\x2a', [5, 6], compact=True) == [-7, 42]
+    for corrupt in (b'\x80\x00', b'\x80' * 10, b'\xff' * 9 + b'\x02'):
+        try:
+            dec.decode_args(corrupt, [8], compact=True)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('noncanonical/overflow ULEB128 accepted')
+
     mode = {'TEXT': 'text', 'BINARY': 'binary', 'RUNTIME': 'switch'}[a.mode]
     prefix = work / f'run_{mode}'
     status = command(a.demo, mode, a.dict, str(prefix)).stdout
@@ -81,7 +92,7 @@ def do_test(a):
             assert 'Signed exp: +3.250e+00' in cpp
             assert 'Dynamic width: [    go]' in cpp
         raw = binary.read_bytes()
-        assert raw[:8] == b'ZXLOG02\0' and len(raw) >= 64
+        assert raw[:8] == b'ZXLOG03\0' and len(raw) >= 64
         assert int.from_bytes(raw[60:64], 'little') == binascii.crc32(raw[:60])
 
         # CRC detects even valid-length corruption; recover salvages later records.
@@ -135,10 +146,25 @@ def do_test(a):
         assert len(list(dec.iter_logs(archived, build_id, entries))) == 13
         assert len(list(dec.iter_logs(live, build_id, entries))) == 13
 
-        # A legacy v1 active segment is preserved through a v0.4 upgrade.
+        # A legacy v1 active segment is preserved through a v0.7 upgrade.
         ready_id = next((event for event, e in entries.items()
                          if e[1] == 'Ready' and not e[2]), None)
         assert ready_id is not None
+        # A genuine v2 framed record must decode with its original fixed-width
+        # semantics. Both decoders retain v1/v2 support after v3 deployment.
+        v2_header = bytearray(raw[:64])
+        v2_header[:8] = b'ZXLOG02\0'
+        struct.pack_into('<H', v2_header, 8, 2)
+        struct.pack_into('<I', v2_header, 60, binascii.crc32(v2_header[:60]))
+        v2_body = struct.pack('<IIQ', 20, ready_id, 3)
+        v2_record = v2_body + struct.pack('<I', binascii.crc32(v2_body))
+        v2_file = work / 'compat_v2.blog'
+        v2_file.write_bytes(v2_header + v2_record)
+        assert list(dec.iter_logs(v2_file, build_id, entries)) == [(3, 'INFO', 'Ready')]
+        if a.cpp_decoder:
+            assert '[INFO] Ready' in command(a.cpp_decoder, '--dict', a.dict,
+                                             '--input', str(v2_file)).stdout
+
         legacy_prefix = work / 'legacy'
         old = Path(str(legacy_prefix) + '.blog')
         legacy_header = (b'ZXLOG01\0' + struct.pack('<HH', 1, 48) +
@@ -148,15 +174,15 @@ def do_test(a):
         old_archive = Path(str(old) + '.1')
         assert old_archive.exists()
         assert len(list(dec.iter_logs(old_archive, build_id, entries))) == 1
-        assert old.read_bytes().startswith(b'ZXLOG02\0')
+        assert old.read_bytes().startswith(b'ZXLOG03\0')
 
-        # Torn v2 file header: no valid event, discard incomplete header only.
+        # Torn v3 file header: no valid event, discard incomplete header only.
         header_prefix = work / 'partial_header'
         partial = Path(str(header_prefix) + '.blog')
-        partial.write_bytes(b'ZXLOG02\0' + b'\x02\x00\x40\x00')
+        partial.write_bytes(b'ZXLOG03\0' + b'\x03\x00\x40\x00')
         result = command(a.demo, 'binary', a.dict, str(header_prefix)).stdout
         assert 'repaired_bytes=12' in result
-        assert partial.read_bytes().startswith(b'ZXLOG02\0')
+        assert partial.read_bytes().startswith(b'ZXLOG03\0')
 
         # Never silently overwrite files with unrecognized headers.
         unknown_prefix = work / 'unknown'

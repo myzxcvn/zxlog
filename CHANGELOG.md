@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## Unreleased — v0.7 integration
+- Bounded SPSC record slots with validated `max_record_bytes` and `max_queue_bytes`, plus queue memory statistics; no partial records on overflow.
+- v3 compact typed wire encoding with canonical ULEB128 and ZigZag; Python and C++ decoders preserve v1/v2 compatibility and CRC checks.
+- Public `Sink` abstraction with FileSink retaining existing POSIX FileWriter/PathLease, ConsoleSink and user-supplied mode-specific Sinks; allocation-safe noexcept failure reporting and rejection tests.
+- Track additional Sink flush/sync work independently of primary files, close configured Sinks once per Logger lifetime, and classify ordinary/durable flush failures in write/sync counters.
+- Optional shared Dispatcher with controlled drain/detach and no registry lock across Sink I/O. Default dedicated consumer remains unchanged.
+- Preprocessor compile-time severity filtering with `zxlog_active_level` (0..6), including elimination of disabled ELF log sites.
+- Package OFF builds with an explicitly permitted empty dictionary while retaining image identity and strict metadata validation for normal builds; cover ERROR and OFF pruning in CI.
+- Three-mode GN/Ninja CI regression, enhanced protocol, resource-budget, Sink and shared-lifecycle tests. Fix lost wakeup in Dispatcher drain completion using the condition-variable mutex; add repeated shutdown/re-creation regression.
+- See [docs/v0.7-upgrade.md](docs/v0.7-upgrade.md) for compatibility, memory budgeting, limits and deployment.
+
+## Unreleased (historical v0.4 work)
 
 - Compose Logger from AdmissionState, AsyncRuntime, OutputBackend and Diagnostics, with state and operations owned together. Retain only runtime configuration and remove the unused wall-clock member. Preserve public API, wire formats, ordering and shutdown semantics; consumers must rebuild for the new object layout. Extend rollback and concurrent control/shutdown coverage.
 

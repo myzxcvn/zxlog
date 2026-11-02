@@ -118,6 +118,36 @@ inline std::string_view string_view_of(char *s) noexcept {
     return string_view_of(static_cast<const char *>(s));
 }
 
+
+inline std::size_t varint_size(std::uint64_t value) noexcept {
+    std::size_t count = 1;
+    while (value >= 0x80) { value >>= 7; ++count; }
+    return count;
+}
+inline std::uint64_t zigzag(std::int64_t value) noexcept {
+    const auto bits = static_cast<std::uint64_t>(value);
+    return (bits << 1) ^ (std::uint64_t{0} - static_cast<std::uint64_t>(value < 0));
+}
+inline void write_varint(std::uint8_t *&p, std::uint64_t value) noexcept {
+    while (value >= 0x80) {
+        *p++ = static_cast<std::uint8_t>(value) | 0x80u;
+        value >>= 7;
+    }
+    *p++ = static_cast<std::uint8_t>(value);
+}
+inline bool read_varint(const std::uint8_t *&p, const std::uint8_t *end,
+                        std::uint64_t &value) noexcept {
+    value = 0;
+    for (unsigned i = 0; i != 10; ++i) {
+        if (p == end) return false;
+        const auto byte = *p++;
+        if (i == 9 && byte > 1) return false;
+        value |= std::uint64_t(byte & 0x7fu) << (7u * i);
+        if ((byte & 0x80u) == 0) return i == 0 || byte != 0; // no noncanonical form
+    }
+    return false;
+}
+
 template <typename T>
 std::size_t value_size(const T &value) noexcept {
     constexpr auto code = type_of<T>();
@@ -128,16 +158,21 @@ std::size_t value_size(const T &value) noexcept {
     } else if constexpr (code == Type::String) {
         const auto length = string_view_of(value).size();
         // Bound before adding the 4-byte length field (also avoids overflow).
-        return length > kMaxRecordSize ? kMaxRecordSize + 1 : length + 4;
-    } else if constexpr (code == Type::Boolean || code == Type::Character || code == Type::I8 ||
-                         code == Type::U8) {
+        return length > kMaxRecordSize ? kMaxRecordSize + 1 : length + varint_size(length);
+    } else if constexpr (std::is_enum_v<V>) {
+        return value_size(static_cast<std::underlying_type_t<V>>(value));
+    } else if constexpr (code == Type::Boolean || code == Type::Character) {
         return 1;
-    } else if constexpr (code == Type::I16 || code == Type::U16) {
-        return 2;
-    } else if constexpr (code == Type::I32 || code == Type::U32 || code == Type::F32) {
+    } else if constexpr (code == Type::F32) {
         return 4;
-    } else {
+    } else if constexpr (code == Type::F64) {
         return 8;
+    } else if constexpr (std::is_integral_v<V> && std::is_signed_v<V>) {
+        return varint_size(zigzag(static_cast<std::int64_t>(value)));
+    } else if constexpr (std::is_integral_v<V> && std::is_unsigned_v<V>) {
+        return varint_size(static_cast<std::uint64_t>(value));
+    } else {
+        return 0;
     }
 }
 
@@ -192,12 +227,12 @@ bool write_value(std::uint8_t *&p, const std::uint8_t *end, const T &value) noex
     } else if constexpr (code == Type::String) {
         const auto s = string_view_of(value);
         const auto remaining = static_cast<std::size_t>(end - p);
-        if (remaining < 4 || s.size() > remaining - 4 ||
+        const auto prefix = varint_size(s.size());
+        if (prefix > remaining || s.size() > remaining - prefix ||
             s.size() > std::numeric_limits<std::uint32_t>::max()) {
             return false;
         }
-        write_u32(p, static_cast<std::uint32_t>(s.size()));
-        p += 4;
+        write_varint(p, s.size());
         if (!s.empty()) {
             std::memcpy(p, s.data(), s.size());
         }
@@ -222,26 +257,12 @@ bool write_value(std::uint8_t *&p, const std::uint8_t *end, const T &value) noex
         if constexpr (std::is_enum_v<V>) {
             using Underlying = std::underlying_type_t<V>;
             return write_value(p, end, static_cast<Underlying>(value));
-        } else if constexpr (code == Type::Boolean || code == Type::Character || code == Type::I8 ||
-                             code == Type::U8) {
+        } else if constexpr (code == Type::Boolean || code == Type::Character) {
             *p++ = static_cast<std::uint8_t>(value);
-        } else {
-            using Unsigned = std::make_unsigned_t<V>;
-            const auto raw = static_cast<std::uint64_t>(static_cast<Unsigned>(value));
-            if constexpr (sizeof(V) == 2) {
-                write_u16(p, static_cast<std::uint16_t>(raw));
-                p += 2;
-            }
-
-            if constexpr (sizeof(V) == 4) {
-                write_u32(p, static_cast<std::uint32_t>(raw));
-                p += 4;
-            }
-
-            if constexpr (sizeof(V) == 8) {
-                write_u64(p, raw);
-                p += 8;
-            }
+        } else if constexpr (std::is_integral_v<V> && std::is_signed_v<V>) {
+            write_varint(p, zigzag(static_cast<std::int64_t>(value)));
+        } else if constexpr (std::is_integral_v<V> && std::is_unsigned_v<V>) {
+            write_varint(p, static_cast<std::uint64_t>(value));
         }
     }
 

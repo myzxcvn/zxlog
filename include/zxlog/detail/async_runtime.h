@@ -3,14 +3,17 @@
 #include "zxlog/detail/admission_state.h"
 #include "zxlog/detail/diagnostics.h"
 #include "zxlog/detail/log_record.h"
+#include "zxlog/dispatcher.h"
 #include <atomic>
 #include <condition_variable>
+#include <chrono>
 #include <cstddef>
 #include <deque>
 #include <future>
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <string>
 #include <vector>
 
 namespace zxlog::detail {
@@ -19,9 +22,22 @@ class OutputBackend;
 // Owns producer registrations, ordering, control barriers and the consumer.
 // Logger closes admission and waits for producers before stopping this runtime.
 class AsyncRuntime {
+    friend class ::zxlog::Dispatcher;
     struct ProducerQueue {
-        explicit ProducerQueue(std::size_t count) : slots(count) {}
-        std::vector<LogRecord> slots;
+        struct Slot {
+            std::uint64_t sequence = 0;
+            std::uint32_t length = 0;
+            Level level = Level::Info;
+        };
+        ProducerQueue(std::size_t count, std::size_t record_bytes)
+            : slots(count), payload(count * record_bytes), stride(record_bytes) {}
+        Slot &record(std::uint64_t index) noexcept { return slots[index % slots.size()]; }
+        std::uint8_t *data(std::uint64_t index) noexcept {
+            return payload.data() + (index % slots.size()) * stride;
+        }
+        std::vector<Slot> slots;
+        std::vector<std::uint8_t> payload;
+        const std::size_t stride;
         alignas(64) std::atomic<std::uint64_t> write{0};
         alignas(64) std::atomic<std::uint64_t> read{0};
         std::atomic<unsigned> state{0};  // 0 free, 1 active, 2 retiring
@@ -32,7 +48,9 @@ public:
     class Reservation {
     public:
         explicit operator bool() const noexcept { return queue_ != nullptr; }
-        LogRecord &record() const noexcept { return queue_->slots[tail_ % queue_->slots.size()]; }
+        ProducerQueue::Slot &record() const noexcept { return queue_->record(tail_); }
+        std::uint8_t *data() const noexcept { return queue_->data(tail_); }
+        std::size_t capacity() const noexcept { return queue_->stride; }
     private:
         friend class AsyncRuntime;
         Reservation(ProducerQueue *queue, std::uint64_t tail) : queue_(queue), tail_(tail) {}
@@ -40,12 +58,19 @@ public:
         std::uint64_t tail_;
     };
 
-    void prepare(unsigned max_producers, std::size_t slots);
-    void start(OutputBackend &output, Diagnostics &diagnostics);
+    bool prepare(unsigned max_producers, std::size_t slots, std::size_t record_bytes,
+                 std::size_t budget, std::string *error);
+    std::size_t queue_memory_bytes() const noexcept { return queue_memory_bytes_; }
+    std::size_t queue_payload_bytes() const noexcept { return queue_payload_bytes_; }
+    void start(OutputBackend &output, Diagnostics &diagnostics,
+               std::shared_ptr<Dispatcher> shared_dispatcher = {});
     void stop();
     void release_queues() noexcept { queues_.clear(); }
     void notify_control_waiters() noexcept { control_space_cv_.notify_all(); }
-    void wake() noexcept { wake_cv_.notify_one(); }
+    void wake() noexcept {
+        if (dispatcher_) dispatcher_->notify();
+        else wake_cv_.notify_one();
+    }
     Reservation reserve(std::uint64_t instance_id, Diagnostics &diagnostics) noexcept {
         auto *queue = current_producer(instance_id, diagnostics);
         if (!queue) return {nullptr, 0};
@@ -76,7 +101,8 @@ private:
     ProducerQueue *current_producer(std::uint64_t instance_id, Diagnostics &diagnostics) noexcept;
     bool enqueue_control(Control control, const AdmissionState &admission);
     bool pop_event(LogRecord &scratch, Control &control, bool &is_control);
-    void consume(OutputBackend &output, Diagnostics &diagnostics);
+    void consume() noexcept;
+    bool process_one() noexcept; // exactly one concurrent consumer
     std::atomic<std::uint64_t> sequence_{0};
     std::uint64_t consumed_sequence_ = 0;  // consumer only
     std::mutex control_mutex_;
@@ -85,7 +111,17 @@ private:
     std::mutex wake_mutex_;
     std::condition_variable wake_cv_;
     std::vector<std::shared_ptr<ProducerQueue>> queues_;
+    std::size_t queue_memory_bytes_ = 0;
+    std::size_t queue_payload_bytes_ = 0;
     std::atomic<bool> closing_{false};
+    std::atomic<bool> drained_{false};
+    std::mutex drain_mutex_;
+    std::condition_variable drain_cv_;
+    OutputBackend *output_ = nullptr;
+    Diagnostics *diagnostics_ = nullptr;
+    std::chrono::steady_clock::time_point next_flush_{}, next_sync_{};
+    std::shared_ptr<Dispatcher> dispatcher_;
+    std::shared_ptr<Dispatcher::Entry> registration_;
     std::thread worker_;
 };
 

@@ -41,17 +41,51 @@ def load_dictionary(path):
     return build_id, entries
 
 
-def decode_args(payload, types):
+
+def read_varint(payload, pos):
+    value = 0
+    for i in range(10):
+        if pos >= len(payload):
+            raise ValueError('truncated ULEB128 integer')
+        byte = payload[pos]
+        pos += 1
+        if i == 9 and byte > 1:
+            raise ValueError('ULEB128 overflow')
+        value |= (byte & 0x7f) << (7 * i)
+        if byte & 0x80 == 0:
+            if i > 0 and byte == 0:
+                raise ValueError('noncanonical ULEB128 integer')
+            return value, pos
+    raise ValueError('ULEB128 exceeds 10 bytes')
+
+
+def decode_args(payload, types, compact=False):
     args = []
     pos = 0
     for t in types:
         if t == 13:
-            if pos + 4 > len(payload): raise ValueError('truncated string length')
-            n, = struct.unpack_from('<I', payload, pos)
-            pos += 4
+            if compact:
+                n, pos = read_varint(payload, pos)
+            else:
+                if pos + 4 > len(payload): raise ValueError('truncated string length')
+                n, = struct.unpack_from('<I', payload, pos)
+                pos += 4
             if pos + n > len(payload): raise ValueError('truncated string data')
             args.append(payload[pos:pos+n].decode('utf-8', errors='replace'))
             pos += n
+        elif compact and t in range(1, 9):
+            raw, pos = read_varint(payload, pos)
+            if t in (1, 3, 5, 7):
+                v = -(raw >> 1) - 1 if raw & 1 else raw >> 1
+                bits = {1:8, 3:16, 5:32, 7:64}[t]
+                if not -(1 << (bits-1)) <= v < (1 << (bits-1)):
+                    raise ValueError('signed argument exceeds declared width')
+            else:
+                v = raw
+                bits = {2:8, 4:16, 6:32, 8:64}[t]
+                if raw >= (1 << bits):
+                    raise ValueError('unsigned argument exceeds declared width')
+            args.append(v)
         else:
             if t not in FIXED: raise ValueError('unknown argument type')
             fmt = '<' + FIXED[t]
@@ -98,9 +132,9 @@ def iter_logs(path, build_id, entries, recover=False):
         raise ValueError('truncated zxlog file header')
     magic = data[:8]
     version, header_size = struct.unpack_from('<HH', data, 8)
-    if magic == b'ZXLOG02\0':
-        if version != 2 or header_size != 64 or len(data) < 64:
-            raise ValueError('invalid v2 binary header')
+    if (magic == b'ZXLOG02\0' and version == 2) or (magic == b'ZXLOG03\0' and version == 3):
+        if header_size != 64 or len(data) < 64:
+            raise ValueError('invalid v2/v3 binary header')
         if struct.unpack_from('<I', data, 60)[0] != binascii.crc32(data[:60]):
             raise ValueError('corrupt file header CRC32')
         min_rec, max_rec = 20, 1024
@@ -119,7 +153,7 @@ def iter_logs(path, build_id, entries, recover=False):
         size, event_id, stamp = struct.unpack_from('<IIQ', data, pos)
         if not min_rec <= size <= max_rec or pos + size > len(data):
             raise ValueError(f'bad/truncated record length at {pos}')
-        if version == 2:
+        if version >= 2:
             recorded_crc, = struct.unpack_from('<I', data, pos + 16)
             calculated_crc = binascii.crc32(data[pos:pos+16])
             calculated_crc = binascii.crc32(data[pos+20:pos+size], calculated_crc)
@@ -128,7 +162,7 @@ def iter_logs(path, build_id, entries, recover=False):
         if event_id not in entries:
             raise ValueError(f'unknown EventID 0x{event_id:08x} at {pos}')
         level, fmt, types, _, _ = entries[event_id]
-        args = decode_args(data[pos+min_rec:pos+size], types)
+        args = decode_args(data[pos+min_rec:pos+size], types, compact=(version == 3))
         return size, stamp, LEVELS[level], format_message(fmt, args)
 
     pos = header_size

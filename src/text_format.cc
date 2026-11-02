@@ -44,22 +44,49 @@ std::int64_t sread(const std::uint8_t *p, std::size_t count) noexcept {
     return static_cast<std::int64_t>(bits) - static_cast<std::int64_t>(std::uint64_t(1) << (8 * count));
 }
 
-bool decode_one(Type type, const std::uint8_t *&p, const std::uint8_t *end, Arg &arg) {
+bool decode_one(Type type, const std::uint8_t *&p, const std::uint8_t *end, Arg &arg,
+                bool compact) {
     const auto remaining = static_cast<std::size_t>(end - p);
     arg.type = type;
     if (type == Type::String) {
-        if (remaining < 4) {
-            return false;
+        std::uint64_t n = 0;
+        if (compact) {
+            if (!read_varint(p, end, n)) return false;
+        } else {
+            if (remaining < 4) return false;
+            n = read_u32(p);
+            p += 4;
         }
-
-        const auto n = read_u32(p);
-        p += 4;
         if (n > static_cast<std::size_t>(end - p)) {
             return false;
         }
 
-        arg.text.assign(reinterpret_cast<const char *>(p), n);
+        arg.text.assign(reinterpret_cast<const char *>(p), static_cast<std::size_t>(n));
         p += n;
+        return true;
+    }
+
+    const bool is_signed = type == Type::I8 || type == Type::I16 ||
+                           type == Type::I32 || type == Type::I64;
+    const bool is_unsigned = type == Type::U8 || type == Type::U16 ||
+                             type == Type::U32 || type == Type::U64;
+    if (compact && (is_signed || is_unsigned)) {
+        std::uint64_t raw = 0;
+        if (!read_varint(p, end, raw)) return false;
+        if (is_signed) {
+            const auto magnitude = static_cast<std::int64_t>(raw >> 1);
+            arg.signed_value = (raw & 1u) ? -1 - magnitude : magnitude;
+            const unsigned bits = type == Type::I8 ? 8 : type == Type::I16 ? 16 :
+                                  type == Type::I32 ? 32 : 64;
+            if (bits != 64 &&
+                (arg.signed_value < -(std::int64_t{1} << (bits - 1)) ||
+                 arg.signed_value >= (std::int64_t{1} << (bits - 1)))) return false;
+        } else {
+            arg.unsigned_value = raw;
+            const unsigned bits = type == Type::U8 ? 8 : type == Type::U16 ? 16 :
+                                  type == Type::U32 ? 32 : 64;
+            if (bits != 64 && raw >= (std::uint64_t{1} << bits)) return false;
+        }
         return true;
     }
 
@@ -215,7 +242,7 @@ const DictionaryEntry *Dictionary::lookup(std::uint32_t id) const noexcept {
 }
 
 bool render_text(const DictionaryEntry &entry, const std::uint8_t *data, std::size_t size, std::string &out,
-                 std::size_t max_bytes, bool *too_large) {
+                 std::size_t max_bytes, bool *too_large, std::uint16_t wire_version) {
     out.clear();
     if (too_large) *too_large = false;
     std::vector<Arg> args;
@@ -224,7 +251,7 @@ bool render_text(const DictionaryEntry &entry, const std::uint8_t *data, std::si
     const std::uint8_t *end = p + size;
     for (const Type type : entry.types) {
         Arg arg;
-        if (!decode_one(type, p, end, arg)) {
+        if (!decode_one(type, p, end, arg, wire_version >= 3)) {
             return false;
         }
 

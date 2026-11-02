@@ -15,6 +15,10 @@ TYPES = {1: 'i8', 2: 'u8', 3: 'i16', 4: 'u16', 5: 'i32', 6: 'u32',
          7: 'i64', 8: 'u64', 9: 'f32', 10: 'f64', 11: 'bool', 12: 'char', 13: 'str'}
 
 
+class MissingElfSection(ValueError):
+    pass
+
+
 def elf_section_range(data: bytes, section_name: str):
     if len(data) < 64:
         raise ValueError('truncated ELF header')
@@ -53,7 +57,7 @@ def elf_section_range(data: bytes, section_name: str):
             if start + size > len(data):
                 raise ValueError('truncated ELF metadata section')
             return start, size
-    raise ValueError(f'ELF section {section_name!r} not found (check used/retain/KEEP)')
+    raise MissingElfSection(f'ELF section {section_name!r} not found (check used/retain/KEEP)')
 
 
 def elf_section(data: bytes, section_name: str) -> bytes:
@@ -61,7 +65,7 @@ def elf_section(data: bytes, section_name: str) -> bytes:
     return data[start:start + size]
 
 
-def read_sites(data: bytes):
+def read_sites(data: bytes, allow_empty=False):
     entries = {}
     pos = 0
     while pos < len(data):
@@ -91,7 +95,7 @@ def read_sites(data: bytes):
                              f'{entries[site_id]} and {entry}')
         entries[site_id] = entry
         pos += total
-    if not entries:
+    if not entries and not allow_empty:
         raise ValueError('no LogSite metadata found')
     return sorted(entries.values(), key=lambda entry: entry['id'])
 
@@ -123,6 +127,8 @@ def main():
     ap.add_argument('--json', required=True)
     ap.add_argument('--build-id-file', required=True)
     ap.add_argument('--patched-elf', required=True)
+    ap.add_argument('--allow-empty', action='store_true',
+                    help='allow images with all log sites compiled out')
     a = ap.parse_args()
     source_id = bytes.fromhex(Path(a.build_id_file).read_text().strip())
     if len(source_id) != 16:
@@ -133,7 +139,13 @@ def main():
         raise ValueError('expected one unfinalized 16-byte ELF identity')
     if Path(a.elf).resolve() == Path(a.patched_elf).resolve():
         raise ValueError('patched ELF must not overwrite the linker output')
-    entries = read_sites(elf_section(raw, 'zxlog_meta'))
+    try:
+        metadata = elf_section(raw, 'zxlog_meta')
+    except MissingElfSection:
+        if not a.allow_empty:
+            raise
+        metadata = b''
+    entries = read_sites(metadata, allow_empty=a.allow_empty)
     build_id = hashlib.sha256(b'zxlog-linked-image-v1\0' + source_id + raw).digest()[:16]
     patched = raw[:start] + build_id + raw[start + size:]
     Path(a.patched_elf).parent.mkdir(parents=True, exist_ok=True)
