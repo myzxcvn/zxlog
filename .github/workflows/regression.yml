@@ -26,3 +26,64 @@ jobs:
         run: gn check out/${{ matrix.mode }}
       - name: Build and run integration checks
         run: ninja -C out/${{ matrix.mode }} check
+
+  filtered:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y generate-ninja ninja-build g++ python3 binutils
+      - name: Build with ERROR minimum severity
+        run: |
+          gn gen out/filtered --args='zxlog_mode="BINARY" zxlog_active_level=4'
+          ninja -C out/filtered zxlog_all
+          out/filtered/zxlog_unit
+      - name: Verify ELF dictionary is pruned
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          doc = json.loads(Path('out/filtered/zxlog_dictionary.json').read_text())
+          events = doc['events']
+          assert events and all(e['level'] in ('ERROR', 'CRITICAL') for e in events), events
+          print('PASS inactive sites absent from dictionary:', len(events))
+          PY
+
+  lto:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y generate-ninja ninja-build g++ python3 binutils
+      - name: GCC LTO configure and test
+        run: |
+          gn gen out/LTO --args='zxlog_mode="RUNTIME" zxlog_extra_cflags=["-flto"] zxlog_extra_ldflags=["-flto"]'
+          ninja -C out/LTO check
+
+  clang-sanitize:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address-undefined, thread]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y generate-ninja ninja-build clang python3 binutils
+      - name: Configure sanitizer
+        shell: bash
+        run: |
+          if [ "${{ matrix.sanitizer }}" = "thread" ]; then
+            SANITIZER=thread
+          else
+            SANITIZER=address,undefined
+          fi
+          gn gen out/Sanitize --args="zxlog_mode=\"RUNTIME\" zxlog_cxx=\"clang++\" zxlog_cc=\"clang\" zxlog_linker=\"clang++\" zxlog_extra_cflags=[\"-O1\",\"-fno-omit-frame-pointer\",\"-fsanitize=$SANITIZER\"] zxlog_extra_ldflags=[\"-fsanitize=$SANITIZER\"]"
+      - name: Run full tests
+        run: ninja -C out/Sanitize check
