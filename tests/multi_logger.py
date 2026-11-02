@@ -71,7 +71,7 @@ def main(a):
         return result
 
     roots = {}
-    for scenario in ('isolation', 'diagnostics', 'periodic', 'text_limits', 'encoding', 'churn', 'capacity', 'thread_churn', 'close', 'conflicts', 'rotation', 'resource_budget', 'custom_sink', 'shared_dispatcher', 'failing_sink'):
+    for scenario in ('isolation', 'diagnostics', 'periodic', 'text_limits', 'encoding', 'churn', 'capacity', 'thread_churn', 'close', 'conflicts', 'rotation', 'resource_budget', 'custom_sink', 'periodic_sink', 'shared_dispatcher', 'failing_sink'):
         root = cases / scenario
         root.mkdir()
         roots[scenario] = root

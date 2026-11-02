@@ -589,10 +589,10 @@ public:
         } catch (...) { return false; }
     }
     bool flush(bool) noexcept override { ++flushes; return true; }
-    void close() noexcept override { closed = true; }
+    void close() noexcept override { ++closes; }
     std::vector<std::string> records;
     unsigned flushes = 0;
-    bool closed = false;
+    unsigned closes = 0;
 private:
     zxlog::OutputMode mode_;
 };
@@ -649,13 +649,19 @@ private:
 
 void failing_sink(const Fixture &f) {
     auto opts = f.options("failing_sink");
+    opts.flush_interval = std::chrono::milliseconds(0);
     opts.extra_sinks.push_back(std::make_shared<RejectSink>(opts.initial_mode));
     auto logger = f.create(opts);
     ZX_LOG(logger, ERROR, "custom Sink failure {}", 42);
+    require(!logger->flush(false), "failed custom Sink unexpectedly passed flush");
+    require(logger->stats().write_errors >= 2 && logger->stats().sync_errors == 0 &&
+            logger->last_error().code == zxlog::ErrorCode::Write,
+            "non-durable Sink flush failure not counted as a write error");
     require(!logger->flush(true), "failed custom Sink unexpectedly passed durability");
     const auto diagnostics = logger->stats();
     require(logger->output_failed() && diagnostics.write_errors >= 1 &&
-            diagnostics.io_errors >= 2 && logger->last_error().code != zxlog::ErrorCode::None,
+            diagnostics.io_errors >= 3 && diagnostics.sync_errors >= 1 &&
+            logger->last_error().code == zxlog::ErrorCode::Sync,
             "custom Sink failure not reflected in Diagnostics");
     logger->shutdown();
 }
@@ -678,7 +684,56 @@ void custom_sink(const Fixture &f) {
     }
     report("with_sink", *logger);
     logger->shutdown();
-    require(capture->closed, "custom Sink not closed after draining");
+    logger->shutdown();
+    logger.reset();
+    require(capture->closes == 1, "custom Sink must close exactly once");
+}
+
+class BufferedSink final : public zxlog::Sink {
+public:
+    explicit BufferedSink(zxlog::OutputMode mode) : mode_(mode) {}
+    zxlog::OutputMode mode() const noexcept override { return mode_; }
+    bool append(const std::uint8_t *, std::size_t) noexcept override {
+        pending_ = unsynced_ = true;
+        return true;
+    }
+    bool flush(bool durable) noexcept override {
+        if (pending_) flushed.store(true, std::memory_order_release);
+        if (durable && unsynced_) synced.store(true, std::memory_order_release);
+        pending_ = false;
+        if (durable) unsynced_ = false;
+        return true;
+    }
+    std::atomic<bool> flushed{false}, synced{false};
+private:
+    zxlog::OutputMode mode_;
+    bool pending_ = false, unsynced_ = false; // consumer only
+};
+
+void periodic_sink(const Fixture &f) {
+    for (bool shared : {false, true}) {
+        auto opts = f.options(shared ? "periodic_shared_sink" : "periodic_sink");
+        // The primary file writes and syncs each record during append. Only
+        // the additional Sink has outstanding work for the interval timers.
+        opts.io_batch_bytes = 1;
+        opts.sync_every_records = 1;
+        opts.flush_interval = std::chrono::milliseconds(10);
+        opts.sync_interval = std::chrono::milliseconds(20);
+        if (shared) opts.dispatcher = std::make_shared<zxlog::Dispatcher>();
+        auto sink = std::make_shared<BufferedSink>(opts.initial_mode);
+        opts.extra_sinks.push_back(sink);
+        auto logger = f.create(opts);
+        ZX_LOG(logger, INFO, "periodic additional Sink");
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!sink->synced.load(std::memory_order_acquire) &&
+               std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        require(sink->flushed.load(std::memory_order_acquire) &&
+                sink->synced.load(std::memory_order_acquire),
+                "additional Sink missed periodic flush/sync with an empty primary buffer");
+        logger->shutdown();
+        report(shared ? "periodic_shared_sink" : "periodic_sink", *logger);
+    }
 }
 
 void resource_budget(const Fixture &f) {
@@ -762,6 +817,8 @@ int main(int argc, char **argv) {
             resource_budget(fixture);
         else if (scenario == "custom_sink")
             custom_sink(fixture);
+        else if (scenario == "periodic_sink")
+            periodic_sink(fixture);
         else if (scenario == "shared_dispatcher")
             shared_dispatcher(fixture);
         else if (scenario == "failing_sink")

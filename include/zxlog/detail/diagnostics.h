@@ -44,6 +44,7 @@ private:
     std::atomic<std::uint64_t> queue_full_{0}, producer_limit_{0}, tls_limit_{0}, record_too_large_{0};
     std::atomic<std::uint64_t> invalid_records_{0}, unknown_sites_{0}, format_errors_{0};
     std::atomic<std::uint64_t> write_errors_{0}, open_errors_{0}, rotate_errors_{0}, internal_errors_{0};
+    std::atomic<std::uint64_t> sink_sync_errors_{0};
     std::atomic<bool> output_failed_{false};
     mutable std::mutex error_mutex_;
     ErrorInfo last_error_;

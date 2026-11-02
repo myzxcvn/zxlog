@@ -53,6 +53,8 @@ private:
     std::unique_ptr<FileSink> binary_file_;
     std::unique_ptr<FileSink> text_file_;
     std::vector<std::shared_ptr<Sink>> extra_sinks_;
+    bool extra_pending_ = false;   // consumer only; independent of file buffers
+    bool extra_unsynced_ = false;
 #if ZXLOG_BUILD_MODE != 2
     std::unique_ptr<Dictionary> dictionary_;
     std::string dictionary_path_, text_path_;

@@ -26,15 +26,19 @@ jobs:
 
   filtered:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        level: [4, 6]
     steps:
       - uses: actions/checkout@v4
       - name: Install tools
         run: |
           sudo apt-get update
           sudo apt-get install -y generate-ninja ninja-build g++ python3 binutils
-      - name: Build with ERROR minimum severity
+      - name: Build with severity pruning
         run: |
-          gn gen out/filtered --args='zxlog_mode="BINARY" zxlog_active_level=4'
+          gn gen out/filtered --args='zxlog_mode="BINARY" zxlog_active_level=${{ matrix.level }}'
           ninja -C out/filtered zxlog_all
           out/filtered/zxlog_unit
       - name: Verify ELF dictionary is pruned
@@ -44,8 +48,27 @@ jobs:
           from pathlib import Path
           doc = json.loads(Path('out/filtered/zxlog_dictionary.json').read_text())
           events = doc['events']
-          assert events and all(e['level'] in ('ERROR', 'CRITICAL') for e in events), events
+          if ${{ matrix.level }} == 6:
+              assert not events, events
+          else:
+              assert events and all(e['level'] in ('ERROR', 'CRITICAL') for e in events), events
           print('PASS inactive sites absent from dictionary:', len(events))
+          PY
+      - name: Verify empty metadata requires explicit opt-in
+        if: matrix.level == 6
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          import sys
+          result = subprocess.run([
+              sys.executable, 'tools/extract_dictionary.py',
+              '--elf', 'out/filtered/zxlog_demo_raw',
+              '--build-id-file', 'out/filtered/gen/build_id.txt',
+              '--output', 'out/filtered/strict.zdict',
+              '--json', 'out/filtered/strict.json',
+              '--patched-elf', 'out/filtered/strict-image',
+          ], capture_output=True, text=True)
+          assert result.returncode != 0 and "'zxlog_meta' not found" in result.stderr, result
           PY
 
   lto:

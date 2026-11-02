@@ -146,6 +146,9 @@ action("zxlog_dictionary") {
     "--json", rebase_path(outputs[1], root_build_dir),
     "--patched-elf", rebase_path(outputs[2], root_build_dir),
   ]
+  if (zxlog_active_level == 6) {
+    args += [ "--allow-empty" ]
+  }
 }
 
 # The deployable runtime image excludes the zxlog_meta section. The build-time
@@ -198,6 +201,9 @@ action("zxlog_multi_dictionary") {
     "--json", rebase_path(outputs[1], root_build_dir),
     "--patched-elf", rebase_path(outputs[2], root_build_dir),
   ]
+  if (zxlog_active_level == 6) {
+    args += [ "--allow-empty" ]
+  }
 }
 
 action("prepare_multi_image") {

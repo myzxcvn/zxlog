@@ -27,6 +27,8 @@ void Diagnostics::file_error(ErrorCode code, const char *operation) noexcept {
     // Do not construct an allocating ErrorInfo before entering the guarded
     // Diagnostics::report() path. Important for noexcept Sink error handling.
     output_failed_.store(true, std::memory_order_relaxed);
+    // FileWriter supplies its own sync counter; additional Sinks do not.
+    if (code == ErrorCode::Sync) ++sink_sync_errors_;
     report(code, operation);
 }
 
@@ -70,6 +72,7 @@ Stats Diagnostics::snapshot() const noexcept {
     stats.dropped = dropped_.load(std::memory_order_relaxed);
     stats.io_errors = io_errors_.load(std::memory_order_relaxed);
     stats.text_too_large = text_too_large_.load(std::memory_order_relaxed);
+    stats.sync_errors = sink_sync_errors_.load(std::memory_order_relaxed);
 #define ZXLOG_READ_STAT(name) stats.name = name##_.load(std::memory_order_relaxed)
     ZXLOG_READ_STAT(queue_full);
     ZXLOG_READ_STAT(producer_limit);

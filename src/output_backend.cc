@@ -122,6 +122,8 @@ void OutputBackend::close() noexcept {
     if (text_file_) text_file_->close();
     if (binary_file_) binary_file_->close();
     for (auto &sink : extra_sinks_) sink->close();
+    extra_sinks_.clear();
+    extra_pending_ = extra_unsynced_ = false;
     path_lease_.reset();
 }
 
@@ -129,6 +131,7 @@ void OutputBackend::reset() noexcept {
     text_file_.reset();
     binary_file_.reset();
     extra_sinks_.clear();
+    extra_pending_ = extra_unsynced_ = false;
 #if ZXLOG_BUILD_MODE != 2
     dictionary_.reset();
 #endif
@@ -136,11 +139,13 @@ void OutputBackend::reset() noexcept {
 }
 
 bool OutputBackend::has_pending() const noexcept {
-    return (text_file_ && text_file_->has_pending()) || (binary_file_ && binary_file_->has_pending());
+    return extra_pending_ || (text_file_ && text_file_->has_pending()) ||
+           (binary_file_ && binary_file_->has_pending());
 }
 
 bool OutputBackend::needs_sync() const noexcept {
-    return (text_file_ && text_file_->needs_sync()) || (binary_file_ && binary_file_->needs_sync());
+    return extra_unsynced_ || (text_file_ && text_file_->needs_sync()) ||
+           (binary_file_ && binary_file_->needs_sync());
 }
 
 void OutputBackend::set_mode(OutputMode mode, Diagnostics &diagnostics) {
@@ -205,7 +210,10 @@ void OutputBackend::write(const LogRecord &slot, Diagnostics &diagnostics) {
 void OutputBackend::write_sinks(OutputMode mode, const std::uint8_t *data, std::size_t size,
                                 Diagnostics &diagnostics) noexcept {
     for (auto &sink : extra_sinks_) {
-        if (sink->mode() == mode && !sink->append(data, size)) {
+        if (sink->mode() != mode) continue;
+        // A failed append may still have buffered part of the record.
+        extra_pending_ = extra_unsynced_ = true;
+        if (!sink->append(data, size)) {
             diagnostics.file_error(ErrorCode::Write, "additional Sink append");
         }
     }
@@ -225,11 +233,18 @@ bool OutputBackend::flush(bool durable, Diagnostics &diagnostics) {
             okay = false;
         }
     }
+    bool extra_okay = true;
     for (auto &sink : extra_sinks_) {
         if (!sink->flush(durable)) {
-            diagnostics.file_error(ErrorCode::Sync, "additional Sink flush");
+            diagnostics.file_error(durable ? ErrorCode::Sync : ErrorCode::Write,
+                                   "additional Sink flush");
             okay = false;
+            extra_okay = false;
         }
+    }
+    if (extra_okay) {
+        extra_pending_ = false;
+        if (durable) extra_unsynced_ = false;
     }
     return okay;
 }
