@@ -44,8 +44,8 @@ def do_test(a):
     assert len(entries) >= 19, f'missing log sites: {len(entries)}'
     # Verify legacy fixed-width payload decoding and v3 canonical ULEB128.
     assert dec.decode_args(struct.pack('<iI', -7, 42), [5, 6]) == [-7, 42]
-    assert dec.decode_args(b'\\r\\x2a', [5, 6], compact=True) == [-7, 42]
-    for corrupt in (b'\\x80\\x00', b'\\x80' * 10, b'\\xff' * 9 + b'\\x02'):
+    assert dec.decode_args(b'\r\x2a', [5, 6], compact=True) == [-7, 42]
+    for corrupt in (b'\x80\x00', b'\x80' * 10, b'\xff' * 9 + b'\x02'):
         try:
             dec.decode_args(corrupt, [8], compact=True)
         except ValueError:
@@ -164,7 +164,7 @@ def do_test(a):
         # Torn v2 file header: no valid event, discard incomplete header only.
         header_prefix = work / 'partial_header'
         partial = Path(str(header_prefix) + '.blog')
-        partial.write_bytes(b'ZXLOG02\0' + b'\x03\x00\x40\x00')
+        partial.write_bytes(b'ZXLOG03\0' + b'\x03\x00\x40\x00')
         result = command(a.demo, 'binary', a.dict, str(header_prefix)).stdout
         assert 'repaired_bytes=12' in result
         assert partial.read_bytes().startswith(b'ZXLOG02\0')
