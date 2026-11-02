@@ -609,6 +609,7 @@ void shared_dispatcher(const Fixture &f) {
     for (int i = 0; i != 100; ++i) {
         ZX_LOG(a, INFO, "shared a {}", i);
         ZX_LOG(b, INFO, "shared b {}", i);
+        if (i % 16 == 15) { flush(*a); flush(*b); }
     }
     flush(*a);
     flush(*b);

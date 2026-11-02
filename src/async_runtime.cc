@@ -145,7 +145,8 @@ bool AsyncRuntime::enqueue_control(Control control, const AdmissionState &admiss
     }
 
     controls_.back().sequence = sequence_.fetch_add(1, std::memory_order_acq_rel);
-    lock.unlock();
+    // Keep wake under the control mutex so shutdown cannot reset the
+    // optional Dispatcher while a controller is between publish and notify.
     wake();
     return true;
 }
