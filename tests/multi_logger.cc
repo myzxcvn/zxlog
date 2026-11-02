@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <filesystem>
 #include <fstream>
+#include <cstdlib>
 #include <iostream>
 #include <iterator>
 #include <memory>
@@ -598,6 +599,10 @@ private:
 };
 
 void shared_dispatcher(const Fixture &f) {
+    const auto trace = [](const char *message) {
+        if (std::getenv("ZXLOG_TEST_TRACE")) std::cout << "TRACE: " << message << std::endl;
+    };
+    trace("start");
     auto dispatcher = std::make_shared<zxlog::Dispatcher>();
     auto aopts = f.options("dispatch_a");
     auto bopts = f.options("dispatch_b");
@@ -606,21 +611,26 @@ void shared_dispatcher(const Fixture &f) {
     auto a = f.create(aopts);
     auto b = f.create(bopts);
     require(dispatcher->logger_count() == 2, "shared dispatcher registration failed");
+    trace("registered");
     for (int i = 0; i != 100; ++i) {
         ZX_LOG(a, INFO, "shared a {}", i);
         ZX_LOG(b, INFO, "shared b {}", i);
-        if (i % 16 == 15) { flush(*a); flush(*b); }
+        if (i % 16 == 15) { flush(*a); flush(*b); trace("batch flushed"); }
     }
     flush(*a);
     flush(*b);
+    trace("all flushed");
     a->shutdown();
+    trace("a shutdown");
     require(dispatcher->logger_count() == 1, "unregistered Logger remains");
     ZX_LOG(b, INFO, "shared after close");
     flush(*b);
+    trace("b flushed again");
     require(a->stats().dropped == 0 && b->stats().dropped == 0, "shared dispatcher dropped events");
     report("dispatch_a", *a);
     report("dispatch_b", *b);
     b->shutdown();
+    trace("b shutdown");
     require(dispatcher->logger_count() == 0, "shared dispatcher leaked registration");
 }
 

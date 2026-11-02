@@ -86,4 +86,4 @@ jobs:
           fi
           gn gen out/Sanitize --args="zxlog_mode=\"RUNTIME\" zxlog_cxx=\"clang++\" zxlog_cc=\"clang\" zxlog_linker=\"clang++\" zxlog_extra_cflags=[\"-O1\",\"-fno-omit-frame-pointer\",\"-fsanitize=$SANITIZER\"] zxlog_extra_ldflags=[\"-fsanitize=$SANITIZER\"]"
       - name: Run full tests
-        run: ninja -C out/Sanitize check
+        run: ZXLOG_TEST_TRACE=1 ninja -C out/Sanitize check
