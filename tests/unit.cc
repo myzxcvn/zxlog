@@ -1,4 +1,5 @@
 #include "zxlog/site.h"
+#include "zxlog/zxlog.h"
 #include "zxlog/crc32.h"
 #include <array>
 #include <cstdint>
@@ -15,6 +16,15 @@ constexpr auto kMeta = zxlog::detail::make_site<std::uint32_t>(
     zxlog::Level::Info, "unit.cc", 42, 1, "speed={}");
 static_assert(kMeta.arg_count == 1 && kMeta.types[0] == 6);
 static_assert(kMeta.total_bytes == sizeof(kMeta));
+
+#if ZXLOG_ACTIVE_LEVEL > 2
+struct NotSerializable {};
+void removed_site() {
+    // Both forms must completely eliminate inactive arguments/ELF metadata.
+    ZX_LOG(INFO, "this must not compile or be retained {}", NotSerializable{});
+    ZX_LOG((zxlog::Logger::instance()), INFO, "inactive custom {}", NotSerializable{});
+}
+#endif
 
 int main() {
     const std::uint8_t abc[]{'1', '2', '3', '4', '5', '6', '7', '8', '9'};

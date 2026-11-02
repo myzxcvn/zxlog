@@ -11,7 +11,7 @@ if (zxlog_mode == "TEXT") {
 
 config("common") {
   include_dirs = [ "include", "third_party/fmt/include" ]
-  defines = [ "ZXLOG_BUILD_MODE=$_mode_value" ]
+  defines = [ "ZXLOG_BUILD_MODE=$_mode_value", "ZXLOG_ACTIVE_LEVEL=$zxlog_active_level" ]
   cflags_cc = [
     "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pthread",
     "-ffunction-sections", "-fdata-sections",
@@ -22,6 +22,8 @@ config("common") {
   } else {
     cflags_cc += [ "-O0", "-g" ]
   }
+  cflags_cc += zxlog_extra_cflags
+  ldflags += zxlog_extra_ldflags
 }
 
 config("metadata_link") {
