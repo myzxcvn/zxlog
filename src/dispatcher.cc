@@ -1,7 +1,5 @@
 #include "zxlog/dispatcher.h"
 #include "zxlog/detail/async_runtime.h"
-#include <cstdlib>
-#include <cstdio>
 #include <algorithm>
 #include <chrono>
 #include <utility>
@@ -33,7 +31,6 @@ std::shared_ptr<Dispatcher::Entry> Dispatcher::attach(detail::AsyncRuntime *runt
 
 void Dispatcher::detach(const std::shared_ptr<Entry> &entry) noexcept {
     {
-        if (std::getenv("ZXLOG_TEST_TRACE")) std::fprintf(stderr,"[dispatcher] detach begin %p\n",static_cast<void*>(entry.get()));
         std::lock_guard<std::mutex> lock(registry_mutex_);
         registry_.erase(std::remove(registry_.begin(), registry_.end(), entry), registry_.end());
     }
@@ -42,7 +39,6 @@ void Dispatcher::detach(const std::shared_ptr<Entry> &entry) noexcept {
         entry->detaching = true;
         entry->cv.wait(lock, [&] { return entry->active == 0; });
     }
-    if (std::getenv("ZXLOG_TEST_TRACE")) std::fprintf(stderr,"[dispatcher] detach done %p\n",static_cast<void*>(entry.get()));
 }
 
 std::size_t Dispatcher::logger_count() const noexcept {

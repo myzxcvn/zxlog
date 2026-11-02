@@ -2,7 +2,6 @@
 """End-to-end multi-logger isolation, ownership and macro contract checks."""
 import argparse
 import re
-import os
 import shutil
 import subprocess
 import sys
@@ -19,14 +18,7 @@ def run(*args):
         result = subprocess.run(args, text=True, capture_output=True, timeout=60)
     except subprocess.TimeoutExpired as exc:
         raise AssertionError(f'{args} timed out: stdout={exc.stdout!r}; stderr={exc.stderr!r}') from exc
-    # Ignore only explicitly opted-in lifecycle trace markers. Preserve and
-    # reject all sanitizer reports or unexpected diagnostics.
-    trace = bool(os.environ.get('ZXLOG_TEST_TRACE'))
-    stderr_unexpected = '\n'.join(
-        line for line in result.stderr.splitlines()
-        if not (trace and line.startswith(('[shutdown]', '[stop]', '[worker]', '[dispatcher]')))
-    )
-    if result.returncode or stderr_unexpected:
+    if result.returncode or result.stderr:
         raise AssertionError(f'{args}: {result.returncode}\n{result.stdout}\n{result.stderr}')
     return result.stdout
 
@@ -85,7 +77,6 @@ def main(a):
         roots[scenario] = root
         output = run(exe, scenario, dictionary, str(root))
         for line in output.splitlines():
-            if line.startswith('TRACE: '): continue
             name, accepted, dropped, rotations = line.split()
             accepted, dropped, rotations = int(accepted), int(dropped), int(rotations)
             data = records(root, name)

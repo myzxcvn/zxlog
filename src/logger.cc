@@ -1,6 +1,4 @@
 #include "zxlog/logger.h"
-#include <cstdlib>
-#include <cstdio>
 #include <exception>
 
 namespace zxlog {
@@ -137,9 +135,7 @@ void Logger::shutdown() {
     admission_.stop_accepting();
     runtime_.notify_control_waiters();
     admission_.wait_for_records();
-    if (std::getenv("ZXLOG_TEST_TRACE")) std::fprintf(stderr,"[shutdown] %p admissions drained\n",static_cast<void*>(this));
     runtime_.stop();
-    if (std::getenv("ZXLOG_TEST_TRACE")) std::fprintf(stderr,"[shutdown] %p runtime stopped\n",static_cast<void*>(this));
     output_.close();
     runtime_.release_queues();
     // initialized remains true: reuse requires a new instance ID.
