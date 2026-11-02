@@ -42,6 +42,17 @@ def do_test(a):
     dec = decoder_module()
     build_id, entries = dec.load_dictionary(a.dict)
     assert len(entries) >= 19, f'missing log sites: {len(entries)}'
+    # Verify legacy fixed-width payload decoding and v3 canonical ULEB128.
+    assert dec.decode_args(struct.pack('<iI', -7, 42), [5, 6]) == [-7, 42]
+    assert dec.decode_args(b'\\r\\x2a', [5, 6], compact=True) == [-7, 42]
+    for corrupt in (b'\\x80\\x00', b'\\x80' * 10, b'\\xff' * 9 + b'\\x02'):
+        try:
+            dec.decode_args(corrupt, [8], compact=True)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('noncanonical/overflow ULEB128 accepted')
+
     mode = {'TEXT': 'text', 'BINARY': 'binary', 'RUNTIME': 'switch'}[a.mode]
     prefix = work / f'run_{mode}'
     status = command(a.demo, mode, a.dict, str(prefix)).stdout
@@ -81,7 +92,7 @@ def do_test(a):
             assert 'Signed exp: +3.250e+00' in cpp
             assert 'Dynamic width: [    go]' in cpp
         raw = binary.read_bytes()
-        assert raw[:8] == b'ZXLOG02\0' and len(raw) >= 64
+        assert raw[:8] == b'ZXLOG03\0' and len(raw) >= 64
         assert int.from_bytes(raw[60:64], 'little') == binascii.crc32(raw[:60])
 
         # CRC detects even valid-length corruption; recover salvages later records.
@@ -153,7 +164,7 @@ def do_test(a):
         # Torn v2 file header: no valid event, discard incomplete header only.
         header_prefix = work / 'partial_header'
         partial = Path(str(header_prefix) + '.blog')
-        partial.write_bytes(b'ZXLOG02\0' + b'\x02\x00\x40\x00')
+        partial.write_bytes(b'ZXLOG02\0' + b'\x03\x00\x40\x00')
         result = command(a.demo, 'binary', a.dict, str(header_prefix)).stdout
         assert 'repaired_bytes=12' in result
         assert partial.read_bytes().startswith(b'ZXLOG02\0')

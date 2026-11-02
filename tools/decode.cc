@@ -26,19 +26,24 @@ std::vector<std::uint8_t> read_file(const std::string& path) {
     return data;
 }
 struct Header {
+    std::uint16_t version = 1;
     bool modern = false;
     std::size_t size = 0;
     std::array<std::uint8_t, 16> build_id{};
 };
 Header read_header(const std::vector<std::uint8_t>& data) {
     Header h;
-    if (data.size() >= 64 && std::memcmp(data.data(), "ZXLOG02\0", 8) == 0 &&
-        zxlog::detail::read_u16(data.data() + 8) == 2 &&
+    if (data.size() >= 64 &&
+        ((std::memcmp(data.data(), "ZXLOG02\0", 8) == 0 &&
+          zxlog::detail::read_u16(data.data() + 8) == 2) ||
+         (std::memcmp(data.data(), "ZXLOG03\0", 8) == 0 &&
+          zxlog::detail::read_u16(data.data() + 8) == 3)) &&
         zxlog::detail::read_u16(data.data() + 10) == 64) {
         if (zxlog::detail::crc32(data.data(), 60) !=
             zxlog::detail::read_u32(data.data() + 60))
             throw std::runtime_error("file header CRC32 mismatch");
         h.modern = true;
+        h.version = zxlog::detail::read_u16(data.data() + 8);
         h.size = 64;
     } else if (data.size() >= 48 &&
                std::memcmp(data.data(), "ZXLOG01\0", 8) == 0 &&
@@ -53,7 +58,7 @@ Header read_header(const std::vector<std::uint8_t>& data) {
 }
 
 bool render_at(const std::vector<std::uint8_t>& data, std::size_t offset,
-               bool modern, const zxlog::detail::Dictionary& dict,
+               bool modern, std::uint16_t version, const zxlog::detail::Dictionary& dict,
                std::uint64_t& stamp, std::string& line, std::size_t& length) {
     const std::size_t minimum = modern ? 20 : 16;
     const std::size_t maximum = modern ? zxlog::kMaxRecordSize : 512;
@@ -68,7 +73,7 @@ bool render_at(const std::vector<std::uint8_t>& data, std::size_t offset,
     if (!entry) return false;
     std::string message;
     if (!zxlog::detail::render_text(*entry, rec + minimum,
-                                    length - minimum, message)) return false;
+                                    length - minimum, message, 64u << 10, nullptr, version)) return false;
     stamp = zxlog::detail::read_u64(rec + 8);
     line = std::string{"["} + zxlog::detail::level_name(entry->level) + "] " + message;
     return true;
@@ -88,12 +93,12 @@ void restore(const std::string& path, const std::string& dictionary, bool recove
         std::uint64_t stamp = 0;
         std::size_t length = 0;
         std::string message;
-        if (!render_at(data, pos, h.modern, dict, stamp, message, length)) {
+        if (!render_at(data, pos, h.modern, h.version, dict, stamp, message, length)) {
             if (!recover) throw std::runtime_error("bad event at offset " + std::to_string(pos));
             const auto start = pos;
             do { ++pos; }
             while (pos < data.size() &&
-                   !render_at(data, pos, h.modern, dict, stamp, message, length));
+                   !render_at(data, pos, h.modern, h.version, dict, stamp, message, length));
             std::cerr << "zxlog recovery: skipped " << pos - start << " bytes in " << path << '\n';
             if (pos >= data.size()) return;
         }

@@ -218,14 +218,16 @@ bool FileWriter::repair_existing() {
         std::array<std::uint8_t, 8> prefix{};
         if (total != 0 && (total < 8 || !read_at(fd, prefix.data(), 8, 0) ||
                            (std::memcmp(prefix.data(), "ZXLOG01\0", 8) != 0 &&
-                            std::memcmp(prefix.data(), "ZXLOG02\0", 8) != 0))) {
+                            std::memcmp(prefix.data(), "ZXLOG02\0", 8) != 0 &&
+                            std::memcmp(prefix.data(), "ZXLOG03\0", 8) != 0))) {
             fail("unrecognized existing binary log; refusing to overwrite");
             ::close(fd);
             return false;
         }
 
         // A partially written v2 header cannot contain a complete record.
-        if (total > 0 && total < kBinaryHeaderSize && std::memcmp(prefix.data(), "ZXLOG02\0", 8) == 0) {
+        if (total > 0 && total < kBinaryHeaderSize && (std::memcmp(prefix.data(), "ZXLOG02\0", 8) == 0 ||
+                             std::memcmp(prefix.data(), "ZXLOG03\0", 8) == 0)) {
             valid = 0;
         } else if (total >= 48) {
             std::array<std::uint8_t, kBinaryHeaderSize> header{};
@@ -234,8 +236,10 @@ bool FileWriter::repair_existing() {
                                 read_u16(header.data() + 8) == 1 && read_u16(header.data() + 10) == 48;
             const bool modern = !legacy && total >= kBinaryHeaderSize &&
                                 read_at(fd, header.data(), header.size(), 0) &&
-                                std::memcmp(header.data(), "ZXLOG02\0", 8) == 0 &&
-                                read_u16(header.data() + 8) == kWireVersion &&
+                                ((std::memcmp(header.data(), "ZXLOG02\0", 8) == 0 &&
+                                  read_u16(header.data() + 8) == 2) ||
+                                 (std::memcmp(header.data(), "ZXLOG03\0", 8) == 0 &&
+                                  read_u16(header.data() + 8) == 3)) &&
                                 read_u16(header.data() + 10) == kBinaryHeaderSize &&
                                 read_u32(header.data() + 60) == crc32(header.data(), 60);
             if (!legacy && !modern) {

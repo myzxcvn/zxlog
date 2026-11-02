@@ -73,7 +73,7 @@ bool OutputBackend::open(const Options &options, std::string *error) {
 #endif
 #if ZXLOG_BUILD_MODE != 1
     std::array<std::uint8_t, kBinaryHeaderSize> header{};
-    std::memcpy(header.data(), "ZXLOG02\0", 8);
+    std::memcpy(header.data(), "ZXLOG03\0", 8);
     write_u16(header.data() + 8, kWireVersion);
     write_u16(header.data() + 10, kBinaryHeaderSize);
     std::memcpy(header.data() + 12, options.build_id.data(), options.build_id.size());

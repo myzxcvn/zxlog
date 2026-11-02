@@ -37,12 +37,12 @@ enum class Type : std::uint8_t {
     String = 13
 };
 
-// Wire protocol v2. All integers little-endian; no struct memcpy for headers.
+// Wire protocol v3 (typed ULEB128/ZigZag payload, v2-compatible header). All integers little-endian; no struct memcpy for headers.
 // Record: u32 length, u32 id, u64 steady_ns, u32 CRC32, encoded args.
 // CRC32 IEEE covers bytes [0,16) and [20,length), excluding its own field.
 constexpr std::size_t kRecordHeaderSize = 20;
 constexpr std::size_t kBinaryHeaderSize = 64;
 constexpr std::size_t kMaxRecordSize = 1024;
-constexpr std::uint16_t kWireVersion = 2;
+constexpr std::uint16_t kWireVersion = 3;
 
 }  // namespace zxlog
