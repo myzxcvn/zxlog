@@ -3,7 +3,7 @@
 #include "zxlog/detail/log_record.h"
 #include "zxlog/options.h"
 #include "zxlog/crc32.h"
-#include "file_writer.h"
+
 #include "path_lease.h"
 #if ZXLOG_BUILD_MODE != 2
 #include "text_format.h"
@@ -52,8 +52,17 @@ bool OutputBackend::open(const Options &options, std::string *error) {
         return false;
     }
 
+    // Capture shared ownership before creating file resources. Exceptions are
+    // handled by Logger::initialize(), which releases PathLease on rollback.
+    auto extra_sinks = options.extra_sinks;
+    for (const auto &sink : extra_sinks) {
+        if (!sink || (sink->mode() != OutputMode::Binary && sink->mode() != OutputMode::Text)) {
+            if (error) *error = "invalid additional Sink";
+            return false;
+        }
+    }
     std::size_t path_index = 0;
-    FileWriter::Config fc;
+    FileSink::Config fc;
     fc.max_file_bytes = options.max_file_bytes;
     fc.max_files = options.max_files;
     fc.batch_bytes = options.io_batch_bytes;
@@ -65,9 +74,9 @@ bool OutputBackend::open(const Options &options, std::string *error) {
 #endif
     const auto steady = ns_steady();
 #if ZXLOG_BUILD_MODE != 2
-    auto text_file = std::make_unique<FileWriter>();
     fc.path = lease->paths()[path_index++];
-    if (!text_file->open(fc, {}, false, error)) {
+    auto text_file = std::make_unique<FileSink>(OutputMode::Text, fc);
+    if (!text_file->open(error)) {
         return false;
     }
 #endif
@@ -83,9 +92,9 @@ bool OutputBackend::open(const Options &options, std::string *error) {
     write_u64(header.data() + 48, wall ^ (steady << 1));
     write_u32(header.data() + 56, static_cast<std::uint32_t>(steady >> 32));
     write_u32(header.data() + 60, crc32(header.data(), 60));
-    auto binary_file = std::make_unique<FileWriter>();
     fc.path = lease->paths()[path_index++];
-    if (!binary_file->open(fc, header, true, error)) {
+    auto binary_file = std::make_unique<FileSink>(OutputMode::Binary, fc, header);
+    if (!binary_file->open(error)) {
         return false;
     }
 #endif
@@ -105,18 +114,21 @@ bool OutputBackend::open(const Options &options, std::string *error) {
     binary_file_ = std::move(binary_file);
 #endif
     path_lease_ = std::move(lease);
+    extra_sinks_ = std::move(extra_sinks);
     return true;
 }
 
 void OutputBackend::close() noexcept {
     if (text_file_) text_file_->close();
     if (binary_file_) binary_file_->close();
+    for (auto &sink : extra_sinks_) sink->close();
     path_lease_.reset();
 }
 
 void OutputBackend::reset() noexcept {
     text_file_.reset();
     binary_file_.reset();
+    extra_sinks_.clear();
 #if ZXLOG_BUILD_MODE != 2
     dictionary_.reset();
 #endif
@@ -149,7 +161,7 @@ void OutputBackend::write(const LogRecord &slot, Diagnostics &diagnostics) {
         if (!binary_file_->append(bytes, slot.length)) {
             diagnostics.file_error(binary_file_->last_error());
         }
-
+        write_sinks(OutputMode::Binary, bytes, slot.length, diagnostics);
         return;
     }
 #endif
@@ -182,10 +194,21 @@ void OutputBackend::write(const LogRecord &slot, Diagnostics &diagnostics) {
     }
     line += rendered;
     line += '\n';
-    if (!text_file_->append(reinterpret_cast<const std::uint8_t *>(line.data()), line.size())) {
+    const auto *text = reinterpret_cast<const std::uint8_t *>(line.data());
+    if (!text_file_->append(text, line.size())) {
         diagnostics.file_error(text_file_->last_error());
     }
+    write_sinks(OutputMode::Text, text, line.size(), diagnostics);
 #endif
+}
+
+void OutputBackend::write_sinks(OutputMode mode, const std::uint8_t *data, std::size_t size,
+                                Diagnostics &diagnostics) noexcept {
+    for (auto &sink : extra_sinks_) {
+        if (sink->mode() == mode && !sink->append(data, size)) {
+            diagnostics.file_error(ErrorInfo{ErrorCode::Write, 0, 0, "additional Sink append", ""});
+        }
+    }
 }
 
 bool OutputBackend::flush(bool durable, Diagnostics &diagnostics) {
@@ -202,20 +225,28 @@ bool OutputBackend::flush(bool durable, Diagnostics &diagnostics) {
             okay = false;
         }
     }
+    for (auto &sink : extra_sinks_) {
+        if (!sink->flush(durable)) {
+            diagnostics.file_error(ErrorInfo{ErrorCode::Sync, 0, 0, "additional Sink flush", ""});
+            okay = false;
+        }
+    }
     return okay;
 }
 
 void OutputBackend::add_stats(Stats &stats) const noexcept {
     if (binary_file_) {
-        stats.rotations += binary_file_->rotations();
-        stats.repaired_bytes += binary_file_->repaired_bytes();
-        stats.sync_errors += binary_file_->sync_errors();
+        const auto s = binary_file_->stats();
+        stats.rotations += s.rotations;
+        stats.repaired_bytes += s.repaired_bytes;
+        stats.sync_errors += s.sync_errors;
     }
 
     if (text_file_) {
-        stats.rotations += text_file_->rotations();
-        stats.repaired_bytes += text_file_->repaired_bytes();
-        stats.sync_errors += text_file_->sync_errors();
+        const auto s = text_file_->stats();
+        stats.rotations += s.rotations;
+        stats.repaired_bytes += s.repaired_bytes;
+        stats.sync_errors += s.sync_errors;
     }
 
 }

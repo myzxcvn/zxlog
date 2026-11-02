@@ -2,18 +2,19 @@
 
 #include "zxlog/config.h"
 #include "zxlog/protocol.h"
+#include "zxlog/sink.h"
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace zxlog {
 struct Options;
 struct Stats;
 namespace detail {
 class Dictionary;
-class FileWriter;
 class PathLease;
 class Diagnostics;
 struct LogRecord;
@@ -41,14 +42,17 @@ public:
     bool needs_sync() const noexcept;
     const FlushPolicy &policy() const noexcept { return policy_; }
     void add_stats(Stats &stats) const noexcept;
+    void write_sinks(OutputMode mode, const std::uint8_t *data, std::size_t size,
+                     Diagnostics &diagnostics) noexcept;
 
 private:
     FlushPolicy policy_;
     OutputMode active_mode_ = OutputMode::Binary;
     // Declare lease before writers, so destruction closes writers first.
     std::unique_ptr<PathLease> path_lease_;
-    std::unique_ptr<FileWriter> binary_file_;
-    std::unique_ptr<FileWriter> text_file_;
+    std::unique_ptr<FileSink> binary_file_;
+    std::unique_ptr<FileSink> text_file_;
+    std::vector<std::shared_ptr<Sink>> extra_sinks_;
 #if ZXLOG_BUILD_MODE != 2
     std::unique_ptr<Dictionary> dictionary_;
     std::string dictionary_path_, text_path_;

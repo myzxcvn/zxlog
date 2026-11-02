@@ -68,7 +68,7 @@ def main(a):
         return result
 
     roots = {}
-    for scenario in ('isolation', 'diagnostics', 'periodic', 'text_limits', 'encoding', 'churn', 'capacity', 'thread_churn', 'close', 'conflicts', 'rotation', 'resource_budget'):
+    for scenario in ('isolation', 'diagnostics', 'periodic', 'text_limits', 'encoding', 'churn', 'capacity', 'thread_churn', 'close', 'conflicts', 'rotation', 'resource_budget', 'custom_sink'):
         root = cases / scenario
         root.mkdir()
         roots[scenario] = root
@@ -137,6 +137,7 @@ def main(a):
     for name, offset in (('a', 0), ('b', 100)):
         assert records(roots['thread_churn'], name) == [('INFO', f'custom {offset + i}') for i in range(40)]
     assert records(roots['resource_budget'], 'small_queue') == [('INFO', 'small 7')]
+    assert records(roots['custom_sink'], 'with_sink') == [('INFO', 'sink 19')]
     root = roots['rotation']
     suffix = '.log' if a.mode == 'TEXT' else '.blog'
     files = segments(root, 'rotate', suffix)

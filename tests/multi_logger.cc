@@ -577,6 +577,46 @@ void conflicts(const Fixture &f) {
 }
 
 
+
+class CaptureSink final : public zxlog::Sink {
+public:
+    explicit CaptureSink(zxlog::OutputMode mode) : mode_(mode) {}
+    zxlog::OutputMode mode() const noexcept override { return mode_; }
+    bool append(const std::uint8_t *bytes, std::size_t size) noexcept override {
+        try {
+            records.emplace_back(reinterpret_cast<const char *>(bytes), size);
+            return true;
+        } catch (...) { return false; }
+    }
+    bool flush(bool) noexcept override { ++flushes; return true; }
+    void close() noexcept override { closed = true; }
+    std::vector<std::string> records;
+    unsigned flushes = 0;
+    bool closed = false;
+private:
+    zxlog::OutputMode mode_;
+};
+void custom_sink(const Fixture &f) {
+    auto opts = f.options("with_sink");
+    auto capture = std::make_shared<CaptureSink>(opts.initial_mode);
+    opts.extra_sinks.push_back(capture);
+    auto logger = f.create(opts);
+    ZX_LOG(logger, INFO, "sink {}", 19);
+    flush(*logger);
+    require(capture->records.size() == 1 && capture->flushes > 0, "custom Sink failed to receive event");
+    if (opts.initial_mode == zxlog::OutputMode::Text) {
+        require(capture->records[0].find("sink 19") != std::string::npos, "text Sink got wrong payload");
+    } else {
+        const auto *p = reinterpret_cast<const std::uint8_t*>(capture->records[0].data());
+        require(capture->records[0].size() >= zxlog::kRecordHeaderSize &&
+                zxlog::detail::read_u32(p) == capture->records[0].size(),
+                "binary Sink did not receive a complete event");
+    }
+    report("with_sink", *logger);
+    logger->shutdown();
+    require(capture->closed, "custom Sink not closed after draining");
+}
+
 void resource_budget(const Fixture &f) {
     auto opts = f.options("small_queue");
     opts.max_producers = 2;
@@ -656,6 +696,8 @@ int main(int argc, char **argv) {
             rotation(fixture);
         else if (scenario == "resource_budget")
             resource_budget(fixture);
+        else if (scenario == "custom_sink")
+            custom_sink(fixture);
         else
             return 2;
     } catch (const std::exception &ex) {

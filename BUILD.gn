@@ -37,6 +37,7 @@ static_library("zxlog") {
     "src/diagnostics.cc",
     "src/output_backend.cc",
     "src/file_writer.cc",
+    "src/sink.cc",
     "src/path_lease.cc",
     "src/identity.cc",
   ]
@@ -82,6 +83,8 @@ _build_id_sources = [
   "src/output_backend.cc",
   "src/file_writer.cc",
   "src/file_writer.h",
+  "src/sink.cc",
+  "include/zxlog/sink.h",
   "src/path_lease.cc",
   "src/path_lease.h",
   "src/text_format.h",
