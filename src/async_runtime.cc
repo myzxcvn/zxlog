@@ -275,7 +275,13 @@ bool AsyncRuntime::process_one() noexcept {
         consumed_sequence_ == sequence_.load(std::memory_order_acquire)) {
         if (std::getenv("ZXLOG_TEST_TRACE")) std::fprintf(stderr,"[worker] %p closing drained\n",static_cast<void*>(this));
         (void)output.flush(false, diagnostics);
-        drained_.store(true, std::memory_order_release);
+        // The predicate update and condition-variable wait must use the SAME
+        // mutex. Otherwise a notification can occur between the waiter's
+        // predicate check and its blocking wait, causing shutdown to hang.
+        {
+            std::lock_guard<std::mutex> lock(drain_mutex_);
+            drained_.store(true, std::memory_order_release);
+        }
         drain_cv_.notify_all();
         return true;
     }
