@@ -47,8 +47,8 @@ int main(int argc, char **argv) {
         return 3;
     }
 
-    std::uint32_t speed = 1200;
-    float current = 1.52f;
+    [[maybe_unused]] std::uint32_t speed = 1200;
+    [[maybe_unused]] float current = 1.52f;
     ZX_LOG(INFO, "Motor speed: {}, current: {:.2f}", speed, current);
     ZX_LOG(DEBUG, "Pose: ({:.2f}, {:.2f})", 1.25, 3.50);
     ZX_LOG(WARN, "Sensor ID: {:04x}", std::uint32_t{0x2a});
