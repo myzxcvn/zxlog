@@ -3,7 +3,7 @@
 ## Unreleased — v0.7 integration
 - Bounded SPSC record slots with validated `max_record_bytes` and `max_queue_bytes`, plus queue memory statistics; no partial records on overflow.
 - v3 compact typed wire encoding with canonical ULEB128 and ZigZag; Python and C++ decoders preserve v1/v2 compatibility and CRC checks.
-- Public `Sink` abstraction with FileSink retaining existing POSIX FileWriter/PathLease, ConsoleSink and user-supplied mode-specific Sinks.
+- Public `Sink` abstraction with FileSink retaining existing POSIX FileWriter/PathLease, ConsoleSink and user-supplied mode-specific Sinks; allocation-safe noexcept failure reporting and rejection tests.
 - Optional shared Dispatcher with controlled drain/detach and no registry lock across Sink I/O. Default dedicated consumer remains unchanged.
 - Preprocessor compile-time severity filtering with `zxlog_active_level` (0..6), including elimination of disabled ELF log sites.
 - Three-mode GN/Ninja CI regression, enhanced protocol, resource-budget, Sink and shared-lifecycle tests. Fix lost wakeup in Dispatcher drain completion using the condition-variable mutex; add repeated shutdown/re-creation regression.

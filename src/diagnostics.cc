@@ -23,6 +23,13 @@ void Diagnostics::file_error(const ErrorInfo &error) noexcept {
     report(error.code, error.operation.c_str(), error.path, error.system_error);
 }
 
+void Diagnostics::file_error(ErrorCode code, const char *operation) noexcept {
+    // Do not construct an allocating ErrorInfo before entering the guarded
+    // Diagnostics::report() path. Important for noexcept Sink error handling.
+    output_failed_.store(true, std::memory_order_relaxed);
+    report(code, operation);
+}
+
 ErrorInfo Diagnostics::last_error() const {
     std::lock_guard<std::mutex> lock(error_mutex_);
     return last_error_;

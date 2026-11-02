@@ -35,6 +35,7 @@ public:
     Stats snapshot() const noexcept;
     ErrorInfo last_error() const;
     void file_error(const ErrorInfo &error) noexcept;
+    void file_error(ErrorCode code, const char *operation) noexcept;
     void report(ErrorCode code, const char *operation, const std::string &path = {}, int error = 0) noexcept;
 
 private:

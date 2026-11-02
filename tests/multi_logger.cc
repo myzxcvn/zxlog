@@ -636,6 +636,30 @@ void shared_dispatcher(const Fixture &f) {
     }
 }
 
+
+class RejectSink final : public zxlog::Sink {
+public:
+    explicit RejectSink(zxlog::OutputMode mode) : mode_(mode) {}
+    zxlog::OutputMode mode() const noexcept override { return mode_; }
+    bool append(const std::uint8_t *, std::size_t) noexcept override { return false; }
+    bool flush(bool) noexcept override { return false; }
+private:
+    zxlog::OutputMode mode_;
+};
+
+void failing_sink(const Fixture &f) {
+    auto opts = f.options("failing_sink");
+    opts.extra_sinks.push_back(std::make_shared<RejectSink>(opts.initial_mode));
+    auto logger = f.create(opts);
+    ZX_LOG(logger, ERROR, "custom Sink failure {}", 42);
+    require(!logger->flush(true), "failed custom Sink unexpectedly passed durability");
+    const auto diagnostics = logger->stats();
+    require(logger->output_failed() && diagnostics.write_errors >= 1 &&
+            diagnostics.io_errors >= 2 && logger->last_error().code != zxlog::ErrorCode::None,
+            "custom Sink failure not reflected in Diagnostics");
+    logger->shutdown();
+}
+
 void custom_sink(const Fixture &f) {
     auto opts = f.options("with_sink");
     auto capture = std::make_shared<CaptureSink>(opts.initial_mode);
@@ -740,6 +764,8 @@ int main(int argc, char **argv) {
             custom_sink(fixture);
         else if (scenario == "shared_dispatcher")
             shared_dispatcher(fixture);
+        else if (scenario == "failing_sink")
+            failing_sink(fixture);
         else
             return 2;
     } catch (const std::exception &ex) {

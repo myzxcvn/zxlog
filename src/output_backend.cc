@@ -206,7 +206,7 @@ void OutputBackend::write_sinks(OutputMode mode, const std::uint8_t *data, std::
                                 Diagnostics &diagnostics) noexcept {
     for (auto &sink : extra_sinks_) {
         if (sink->mode() == mode && !sink->append(data, size)) {
-            diagnostics.file_error(ErrorInfo{ErrorCode::Write, 0, 0, "additional Sink append", ""});
+            diagnostics.file_error(ErrorCode::Write, "additional Sink append");
         }
     }
 }
@@ -227,7 +227,7 @@ bool OutputBackend::flush(bool durable, Diagnostics &diagnostics) {
     }
     for (auto &sink : extra_sinks_) {
         if (!sink->flush(durable)) {
-            diagnostics.file_error(ErrorInfo{ErrorCode::Sync, 0, 0, "additional Sink flush", ""});
+            diagnostics.file_error(ErrorCode::Sync, "additional Sink flush");
             okay = false;
         }
     }
