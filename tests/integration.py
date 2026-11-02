@@ -146,10 +146,25 @@ def do_test(a):
         assert len(list(dec.iter_logs(archived, build_id, entries))) == 13
         assert len(list(dec.iter_logs(live, build_id, entries))) == 13
 
-        # A legacy v1 active segment is preserved through a v0.4 upgrade.
+        # A legacy v1 active segment is preserved through a v0.7 upgrade.
         ready_id = next((event for event, e in entries.items()
                          if e[1] == 'Ready' and not e[2]), None)
         assert ready_id is not None
+        # A genuine v2 framed record must decode with its original fixed-width
+        # semantics. Both decoders retain v1/v2 support after v3 deployment.
+        v2_header = bytearray(raw[:64])
+        v2_header[:8] = b'ZXLOG02\0'
+        struct.pack_into('<H', v2_header, 8, 2)
+        struct.pack_into('<I', v2_header, 60, binascii.crc32(v2_header[:60]))
+        v2_body = struct.pack('<IIQ', 20, ready_id, 3)
+        v2_record = v2_body + struct.pack('<I', binascii.crc32(v2_body))
+        v2_file = work / 'compat_v2.blog'
+        v2_file.write_bytes(v2_header + v2_record)
+        assert list(dec.iter_logs(v2_file, build_id, entries)) == [(3, 'INFO', 'Ready')]
+        if a.cpp_decoder:
+            assert '[INFO] Ready' in command(a.cpp_decoder, '--dict', a.dict,
+                                             '--input', str(v2_file)).stdout
+
         legacy_prefix = work / 'legacy'
         old = Path(str(legacy_prefix) + '.blog')
         legacy_header = (b'ZXLOG01\0' + struct.pack('<HH', 1, 48) +
@@ -159,15 +174,15 @@ def do_test(a):
         old_archive = Path(str(old) + '.1')
         assert old_archive.exists()
         assert len(list(dec.iter_logs(old_archive, build_id, entries))) == 1
-        assert old.read_bytes().startswith(b'ZXLOG02\0')
+        assert old.read_bytes().startswith(b'ZXLOG03\0')
 
-        # Torn v2 file header: no valid event, discard incomplete header only.
+        # Torn v3 file header: no valid event, discard incomplete header only.
         header_prefix = work / 'partial_header'
         partial = Path(str(header_prefix) + '.blog')
         partial.write_bytes(b'ZXLOG03\0' + b'\x03\x00\x40\x00')
         result = command(a.demo, 'binary', a.dict, str(header_prefix)).stdout
         assert 'repaired_bytes=12' in result
-        assert partial.read_bytes().startswith(b'ZXLOG02\0')
+        assert partial.read_bytes().startswith(b'ZXLOG03\0')
 
         # Never silently overwrite files with unrecognized headers.
         unknown_prefix = work / 'unknown'

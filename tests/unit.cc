@@ -32,7 +32,7 @@ int main() {
         !zxlog::detail::read_varint(start, cursor, c) || c != 4 ||
         std::string(reinterpret_cast<const char*>(start), 4) != "test") return 1;
     // Rejected values must leave the cursor and destination untouched.
-    for (std::size_t capacity = 0; capacity < 8; ++capacity) {
+    for (std::size_t capacity = 0; capacity < 5; ++capacity) {
         std::array<std::uint8_t, 10> guarded;
         guarded.fill(0xa5);
         auto *p = guarded.data() + 1;
@@ -41,6 +41,14 @@ int main() {
         for (auto byte : guarded) if (byte != 0xa5) return 5;
         if (zxlog::detail::write_value(p, p + capacity, std::uint64_t{0xffffffffffffffffull})) return 6;
         for (auto byte : guarded) if (byte != 0xa5) return 7;
+    }
+    for (std::size_t capacity = 5; capacity < 10; ++capacity) {
+        std::array<std::uint8_t, 12> guard;
+        guard.fill(0xa5);
+        auto *p = guard.data() + 1;
+        if (zxlog::detail::write_value(p, p + capacity, std::uint64_t{0xffffffffffffffffull}))
+            return 8;
+        for (auto byte : guard) if (byte != 0xa5) return 9;
     }
     std::cout << "zxlog unit tests passed\n";
 }
